@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -43,3 +43,44 @@ def test_partition_from_datetime():
     assert partition.year == 2026
     assert partition.month == 5
     assert partition.key == "timeframe=1h/year=2026/month=05"
+
+
+def test_partition_rejects_unsupported_timeframe():
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        Partition(timeframe="15m", year=2026, month=5)
+
+
+def test_daily_partition_rejects_month():
+    with pytest.raises(ValueError, match="Daily partitions"):
+        Partition(timeframe="1d", year=2026, month=5)
+
+
+def test_intraday_partition_requires_month():
+    with pytest.raises(ValueError, match="Intraday partitions"):
+        Partition(timeframe="1h", year=2026)
+
+
+def test_intraday_partition_rejects_invalid_month():
+    with pytest.raises(ValueError, match="month"):
+        Partition(timeframe="1h", year=2026, month=13)
+
+
+def test_partition_rejects_non_positive_year():
+    with pytest.raises(ValueError, match="year"):
+        Partition(timeframe="1h", year=0, month=5)
+
+
+def test_partition_from_datetime_requires_timezone_aware_value():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        Partition.from_datetime("1h", datetime(2026, 5, 1, 0, 30))
+
+
+def test_partition_from_datetime_normalizes_to_utc():
+    partition = Partition.from_datetime(
+        "1h",
+        datetime(2026, 5, 1, 0, 30, tzinfo=timezone(timedelta(hours=8))),
+    )
+
+    assert partition.year == 2026
+    assert partition.month == 4
+    assert partition.key == "timeframe=1h/year=2026/month=04"

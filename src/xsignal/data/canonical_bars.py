@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 SUPPORTED_TIMEFRAMES = {"1h", "4h", "1d"}
@@ -44,9 +44,25 @@ class Partition:
     year: int
     month: int | None = None
 
+    def __post_init__(self) -> None:
+        validate_timeframe(self.timeframe)
+        if self.year <= 0:
+            raise ValueError("Partition year must be positive")
+        if self.timeframe == "1d":
+            if self.month is not None:
+                raise ValueError("Daily partitions must not include a month")
+            return
+        if self.month is None:
+            raise ValueError("Intraday partitions require a month")
+        if not 1 <= self.month <= 12:
+            raise ValueError("Partition month must be between 1 and 12")
+
     @classmethod
     def from_datetime(cls, timeframe: str, value: datetime) -> "Partition":
         validate_timeframe(timeframe)
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Partition datetime must be timezone-aware")
+        value = value.astimezone(timezone.utc)
         if timeframe == "1d":
             return cls(timeframe=timeframe, year=value.year)
         return cls(timeframe=timeframe, year=value.year, month=value.month)
