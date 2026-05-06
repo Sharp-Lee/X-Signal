@@ -10,6 +10,21 @@ EXPECTED_1M_COUNTS = {
     "4h": 240,
     "1d": 1440,
 }
+CANONICAL_BAR_COLUMNS = (
+    "symbol",
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
+    "bar_count",
+    "is_complete",
+)
 
 
 def validate_timeframe(timeframe: str) -> str:
@@ -72,3 +87,17 @@ class Partition:
         if self.month is None:
             return f"timeframe={self.timeframe}/year={self.year:04d}"
         return f"timeframe={self.timeframe}/year={self.year:04d}/month={self.month:02d}"
+
+
+def partition_bounds(partition: Partition) -> tuple[datetime, datetime]:
+    if partition.month is None:
+        start = datetime(partition.year, 1, 1, tzinfo=timezone.utc)
+        end = datetime(partition.year + 1, 1, 1, tzinfo=timezone.utc)
+        return start, end
+
+    start = datetime(partition.year, partition.month, 1, tzinfo=timezone.utc)
+    if partition.month == 12:
+        end = datetime(partition.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(partition.year, partition.month + 1, 1, tzinfo=timezone.utc)
+    return start, end

@@ -6,9 +6,10 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from xsignal.data.canonical_bars import Partition
+from xsignal.data.canonical_bars import CANONICAL_BAR_COLUMNS, Partition, partition_bounds
 from xsignal.data.locks import ExportLock, atomic_publish
 from xsignal.data.paths import CanonicalPaths
+from xsignal.data.query_templates import CLICKHOUSE_SOURCE_TABLE, build_aggregate_query, query_hash
 from xsignal.runs.manifest import ExportManifest
 
 
@@ -36,26 +37,52 @@ class Catalog:
             return None
 
     def status(self, partition: Partition, dataset_version: str) -> PartitionStatus:
-        parquet_path = self.paths.parquet_path(partition)
         manifest_path = self.paths.manifest_path(partition)
-        if not parquet_path.exists() or not manifest_path.exists():
+        if not manifest_path.exists():
             return PartitionStatus.MISSING
-        if not parquet_path.is_file():
-            return PartitionStatus.STALE
 
         manifest = self.load_manifest(partition)
         if manifest is None:
             return PartitionStatus.STALE
 
+        return self.status_for_manifest(partition, dataset_version, manifest)
+
+    def status_for_manifest(
+        self,
+        partition: Partition,
+        dataset_version: str,
+        manifest: ExportManifest,
+    ) -> PartitionStatus:
+        parquet_path = Path(manifest.parquet_path)
+        if not parquet_path.exists() or not parquet_path.is_file():
+            return PartitionStatus.STALE
         if manifest.dataset_version != dataset_version:
             return PartitionStatus.STALE
         if manifest.timeframe != partition.timeframe:
             return PartitionStatus.STALE
         if manifest.partition_key != partition.key:
             return PartitionStatus.STALE
-        if manifest.parquet_path != str(parquet_path):
-            return PartitionStatus.STALE
         if manifest.row_count <= 0:
+            return PartitionStatus.STALE
+        if manifest.source_table != CLICKHOUSE_SOURCE_TABLE:
+            return PartitionStatus.STALE
+        if manifest.deduplication_mode != "FINAL":
+            return PartitionStatus.STALE
+        if manifest.aggregation_semantics_version != "ohlcv-v1":
+            return PartitionStatus.STALE
+        start, end = partition_bounds(partition)
+        expected_query_hash = query_hash(build_aggregate_query(partition.timeframe, start, end))
+        if manifest.query_hash != expected_query_hash:
+            return PartitionStatus.STALE
+        try:
+            import pyarrow.parquet as pq
+
+            parquet_metadata = pq.read_metadata(parquet_path)
+        except Exception:
+            return PartitionStatus.STALE
+        if parquet_metadata.num_rows != manifest.row_count:
+            return PartitionStatus.STALE
+        if tuple(parquet_metadata.schema.names) != CANONICAL_BAR_COLUMNS:
             return PartitionStatus.STALE
         return PartitionStatus.COMPLETE
 
@@ -67,13 +94,16 @@ class Catalog:
                 catalog = json.loads(catalog_path.read_text())
             else:
                 catalog = {"timeframe": manifest.timeframe, "partitions": {}}
-            catalog["partitions"][manifest.partition_key] = {
+            entry = {
                 "dataset_version": manifest.dataset_version,
                 "row_count": manifest.row_count,
                 "query_hash": manifest.query_hash,
                 "parquet_path": manifest.parquet_path,
                 "exported_at": manifest.exported_at,
             }
+            if catalog["partitions"].get(manifest.partition_key) == entry:
+                return
+            catalog["partitions"][manifest.partition_key] = entry
             temp_path = catalog_path.with_name(f".{catalog_path.name}.tmp")
             temp_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
             atomic_publish(temp_path, catalog_path)

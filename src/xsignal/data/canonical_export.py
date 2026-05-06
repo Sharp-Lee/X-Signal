@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from xsignal.data.canonical_bars import CanonicalRequest, Partition
+from xsignal.data.canonical_bars import CanonicalRequest, Partition, partition_bounds
 from xsignal.data.catalog import Catalog, PartitionStatus
 from xsignal.data.clickhouse import ClickHouseClient, ClickHouseConfig
 from xsignal.data.locks import ExportLock, atomic_publish
@@ -83,20 +83,6 @@ def partitions_for_full_history(
     return partitions
 
 
-def _partition_bounds(partition: Partition) -> tuple[datetime, datetime]:
-    if partition.month is None:
-        start = datetime(partition.year, 1, 1, tzinfo=timezone.utc)
-        end = datetime(partition.year + 1, 1, 1, tzinfo=timezone.utc)
-        return start, end
-
-    start = datetime(partition.year, partition.month, 1, tzinfo=timezone.utc)
-    if partition.month == 12:
-        end = datetime(partition.year + 1, 1, 1, tzinfo=timezone.utc)
-    else:
-        end = datetime(partition.year, partition.month + 1, 1, tzinfo=timezone.utc)
-    return start, end
-
-
 def _repair_catalog(catalog: Catalog, partition: Partition) -> None:
     manifest = catalog.load_manifest(partition)
     if manifest is not None:
@@ -126,10 +112,9 @@ def ensure_canonical_bars(
                 continue
 
             run_id = uuid.uuid4().hex
-            start, end = _partition_bounds(partition)
+            start, end = partition_bounds(partition)
             sql = build_aggregate_query(request.timeframe, start, end)
             temp_parquet = paths.temp_parquet_path(partition, run_id)
-            target_parquet = paths.parquet_path(partition)
             try:
                 row_count = exporter.export(sql, temp_parquet)
             except Exception:
@@ -138,6 +123,7 @@ def ensure_canonical_bars(
             if row_count <= 0:
                 temp_parquet.unlink(missing_ok=True)
                 raise ValueError(f"Export returned non-positive row_count={row_count}")
+            target_parquet = paths.published_parquet_path(partition, run_id)
             try:
                 atomic_publish(temp_parquet, target_parquet)
             except Exception:
@@ -156,6 +142,12 @@ def ensure_canonical_bars(
                 parquet_path=str(target_parquet),
                 exported_at=clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
+            if (
+                catalog.status_for_manifest(partition, request.dataset_version, manifest)
+                != PartitionStatus.COMPLETE
+            ):
+                target_parquet.unlink(missing_ok=True)
+                raise ValueError("published parquet failed manifest validation")
             temp_manifest = paths.temp_manifest_path(partition, run_id)
             temp_manifest.parent.mkdir(parents=True, exist_ok=True)
             temp_manifest.write_text(manifest.model_dump_json(indent=2))
@@ -163,6 +155,7 @@ def ensure_canonical_bars(
                 atomic_publish(temp_manifest, paths.manifest_path(partition))
             except Exception:
                 temp_manifest.unlink(missing_ok=True)
+                target_parquet.unlink(missing_ok=True)
                 raise
             catalog.mark_complete(manifest)
 
@@ -177,15 +170,61 @@ class ClickHouseExporter:
         return self.client.write_parquet(sql, path)
 
 
+def _as_utc_aware(value: datetime | int | float) -> datetime:
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(value, timezone.utc)
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def discover_full_history_bounds(client: ClickHouseClient) -> tuple[datetime, datetime]:
+    table = client.query_arrow(
+        f"""
+SELECT
+    min(open_time) AS start,
+    max(open_time) + INTERVAL 1 minute AS end
+FROM {CLICKHOUSE_SOURCE_TABLE}
+""".strip()
+    )
+    rows = table.to_pylist()
+    if not rows or rows[0]["start"] is None or rows[0]["end"] is None:
+        raise ValueError("ClickHouse source table has no bars to export")
+    start = _as_utc_aware(rows[0]["start"])
+    end = _as_utc_aware(rows[0]["end"])
+    if end <= start:
+        raise ValueError("ClickHouse source range is empty")
+    return start, end
+
+
+@dataclass
+class _LazyExporter:
+    factory: Callable[[], Exporter]
+    _exporter: Exporter | None = None
+
+    def export(self, sql: str, path: Path) -> int:
+        if self._exporter is None:
+            self._exporter = self.factory()
+        return self._exporter.export(sql, path)
+
+
 def _ensure_command(args: argparse.Namespace) -> CanonicalDataset:
-    partition = Partition(timeframe=args.timeframe, year=args.year, month=args.month)
     request = CanonicalRequest(timeframe=args.timeframe)
     paths = CanonicalPaths(root=Path(args.root))
-    exporter = ClickHouseExporter(ClickHouseClient(ClickHouseConfig()))
+    if args.year is None:
+        if args.month is not None:
+            raise ValueError("--month requires --year")
+        client = ClickHouseClient(ClickHouseConfig())
+        start, end = discover_full_history_bounds(client)
+        partitions = partitions_for_full_history(args.timeframe, start, end)
+        exporter: Exporter = ClickHouseExporter(client)
+    else:
+        partitions = [Partition(timeframe=args.timeframe, year=args.year, month=args.month)]
+        exporter = _LazyExporter(lambda: ClickHouseExporter(ClickHouseClient(ClickHouseConfig())))
     return ensure_canonical_bars(
         request=request,
         paths=paths,
-        partitions=[partition],
+        partitions=partitions,
         exporter=exporter,
     )
 
@@ -195,8 +234,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     ensure_parser = subparsers.add_parser("ensure")
     ensure_parser.add_argument("--timeframe", required=True)
-    ensure_parser.add_argument("--root", required=True)
-    ensure_parser.add_argument("--year", required=True, type=int)
+    ensure_parser.add_argument("--root", default="data")
+    ensure_parser.add_argument("--year", type=int)
     ensure_parser.add_argument("--month", type=int)
     ensure_parser.set_defaults(func=_ensure_command)
 

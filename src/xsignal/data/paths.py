@@ -29,6 +29,10 @@ class CanonicalPaths:
     def parquet_path(self, partition: Partition) -> Path:
         return self.partition_dir(partition) / "bars.parquet"
 
+    def published_parquet_path(self, partition: Partition, run_id: str) -> Path:
+        run_id = _validate_run_id(run_id)
+        return self.partition_dir(partition) / f"bars.{run_id}.parquet"
+
     def temp_parquet_path(self, partition: Partition, run_id: str) -> Path:
         run_id = _validate_run_id(run_id)
         return self.partition_dir(partition) / f".bars.{run_id}.tmp.parquet"

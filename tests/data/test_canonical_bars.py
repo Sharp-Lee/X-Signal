@@ -94,6 +94,9 @@ def test_canonical_paths_are_deterministic(tmp_path):
     assert paths.parquet_path(partition) == (
         tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "bars.parquet"
     )
+    assert paths.published_parquet_path(partition, "abc123") == (
+        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "bars.abc123.parquet"
+    )
     assert paths.manifest_path(partition) == (
         tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "manifest.json"
     )
@@ -121,6 +124,14 @@ def test_temp_parquet_path_rejects_unsafe_run_id(tmp_path):
 
     with pytest.raises(ValueError, match="run_id"):
         paths.temp_parquet_path(partition, "x/../../escape")
+
+
+def test_published_parquet_path_rejects_unsafe_run_id(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path)
+
+    with pytest.raises(ValueError, match="run_id"):
+        paths.published_parquet_path(partition, "x/../../escape")
 
 
 def test_temp_manifest_path_rejects_unsafe_run_id(tmp_path):
