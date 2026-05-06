@@ -42,6 +42,12 @@ def _partition_bounds(partition: Partition) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _repair_catalog(catalog: Catalog, partition: Partition) -> None:
+    manifest = catalog.load_manifest(partition)
+    if manifest is not None:
+        catalog.mark_complete(manifest)
+
+
 def ensure_canonical_bars(
     request: CanonicalRequest,
     paths: CanonicalPaths,
@@ -56,10 +62,12 @@ def ensure_canonical_bars(
         if partition.timeframe != request.timeframe:
             raise ValueError("Partition timeframe must match request timeframe")
         if catalog.status(partition, request.dataset_version) == PartitionStatus.COMPLETE:
+            _repair_catalog(catalog, partition)
             continue
 
         with ExportLock(paths.lock_path(partition)):
             if catalog.status(partition, request.dataset_version) == PartitionStatus.COMPLETE:
+                _repair_catalog(catalog, partition)
                 continue
 
             run_id = uuid.uuid4().hex
@@ -67,7 +75,14 @@ def ensure_canonical_bars(
             sql = build_aggregate_query(request.timeframe, start, end)
             temp_parquet = paths.temp_parquet_path(partition, run_id)
             target_parquet = paths.parquet_path(partition)
-            row_count = exporter.export(sql, temp_parquet)
+            try:
+                row_count = exporter.export(sql, temp_parquet)
+            except Exception:
+                temp_parquet.unlink(missing_ok=True)
+                raise
+            if row_count <= 0:
+                temp_parquet.unlink(missing_ok=True)
+                raise ValueError(f"Export returned non-positive row_count={row_count}")
             atomic_publish(temp_parquet, target_parquet)
 
             manifest = ExportManifest(
