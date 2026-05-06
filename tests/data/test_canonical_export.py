@@ -140,3 +140,24 @@ def test_ensure_cleans_partial_temp_parquet_when_export_fails(tmp_path):
     assert not paths.manifest_path(partition).exists()
     assert not paths.catalog_path("1h").exists()
     assert list(paths.partition_dir(partition).glob("*.tmp.parquet")) == []
+
+
+def test_ensure_cleans_temp_parquet_when_publish_fails(tmp_path):
+    exporter = FakeExporter()
+    paths = CanonicalPaths(root=tmp_path)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths.parquet_path(partition).mkdir(parents=True)
+
+    with pytest.raises(OSError):
+        ensure_canonical_bars(
+            request=CanonicalRequest(timeframe="1h"),
+            paths=paths,
+            partitions=[partition],
+            exporter=exporter,
+            now=lambda: datetime(2026, 5, 6, tzinfo=timezone.utc),
+        )
+
+    assert paths.parquet_path(partition).is_dir()
+    assert not paths.manifest_path(partition).exists()
+    assert not paths.catalog_path("1h").exists()
+    assert list(paths.partition_dir(partition).glob("*.tmp.parquet")) == []

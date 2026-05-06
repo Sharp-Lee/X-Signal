@@ -83,7 +83,11 @@ def ensure_canonical_bars(
             if row_count <= 0:
                 temp_parquet.unlink(missing_ok=True)
                 raise ValueError(f"Export returned non-positive row_count={row_count}")
-            atomic_publish(temp_parquet, target_parquet)
+            try:
+                atomic_publish(temp_parquet, target_parquet)
+            except Exception:
+                temp_parquet.unlink(missing_ok=True)
+                raise
 
             manifest = ExportManifest(
                 dataset_version=request.dataset_version,
