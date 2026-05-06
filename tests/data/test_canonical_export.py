@@ -1,11 +1,11 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from xsignal.data.canonical_bars import CanonicalRequest, Partition
-from xsignal.data.canonical_export import ensure_canonical_bars
+from xsignal.data.canonical_export import ensure_canonical_bars, partitions_for_full_history
 from xsignal.data.paths import CanonicalPaths
 
 
@@ -182,3 +182,44 @@ def test_ensure_cleans_temp_manifest_when_manifest_publish_fails(tmp_path):
     assert paths.manifest_path(partition).is_dir()
     assert not paths.catalog_path("1h").exists()
     assert list(paths.partition_dir(partition).glob(".manifest.*.tmp.json")) == []
+
+
+def test_partitions_for_full_history_uses_months_for_intraday_timeframes():
+    partitions = partitions_for_full_history(
+        timeframe="1h",
+        start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1h", year=2026, month=4),
+        Partition(timeframe="1h", year=2026, month=5),
+    ]
+
+
+def test_partitions_for_full_history_uses_years_for_daily_timeframe():
+    partitions = partitions_for_full_history(
+        timeframe="1d",
+        start=datetime(2025, 12, 31, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 6, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1d", year=2025),
+        Partition(timeframe="1d", year=2026),
+    ]
+
+
+def test_partitions_for_full_history_normalizes_bounds_to_utc():
+    utc_plus_8 = timezone(timedelta(hours=8))
+
+    partitions = partitions_for_full_history(
+        timeframe="1h",
+        start=datetime(2026, 5, 1, 0, 30, tzinfo=utc_plus_8),
+        end=datetime(2026, 6, 1, 8, 0, tzinfo=utc_plus_8),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1h", year=2026, month=4),
+        Partition(timeframe="1h", year=2026, month=5),
+    ]

@@ -28,6 +28,49 @@ class CanonicalDataset:
     partitions: Sequence[Partition]
 
 
+def partitions_for_full_history(
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+) -> list[Partition]:
+    if (
+        start.tzinfo is None
+        or start.utcoffset() is None
+        or end.tzinfo is None
+        or end.utcoffset() is None
+    ):
+        raise ValueError("start and end must be timezone-aware")
+
+    start = start.astimezone(timezone.utc)
+    end = end.astimezone(timezone.utc)
+    if end <= start:
+        raise ValueError("end must be after start")
+
+    partitions: list[Partition] = []
+    if timeframe == "1d":
+        for year in range(start.year, end.year + 1):
+            partitions.append(Partition(timeframe=timeframe, year=year))
+        return partitions
+
+    year = start.year
+    month = start.month
+    while (year, month) <= (end.year, end.month):
+        if (
+            (year, month) == (end.year, end.month)
+            and end.day == 1
+            and end.hour == 0
+            and end.minute == 0
+        ):
+            break
+        partitions.append(Partition(timeframe=timeframe, year=year, month=month))
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+    return partitions
+
+
 def _partition_bounds(partition: Partition) -> tuple[datetime, datetime]:
     if partition.month is None:
         start = datetime(partition.year, 1, 1, tzinfo=timezone.utc)
