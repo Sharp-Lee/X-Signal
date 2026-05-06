@@ -78,6 +78,11 @@ def make_manifest(partition: Partition, parquet_path: Path, **overrides: object)
         "partition_key": partition.key,
         "deduplication_mode": "FINAL",
         "aggregation_semantics_version": "ohlcv-v1",
+        "fill_policy": "raw",
+        "synthetic_generation_version": "none",
+        "synthetic_1m_count_total": 0,
+        "incomplete_raw_bar_count": 0,
+        "symbol_bound_policy": "observed_1m_bounds",
         "query_hash": query_hash(build_aggregate_query(partition.timeframe, start, end)),
         "row_count": 10,
         "parquet_path": str(parquet_path),
@@ -269,6 +274,9 @@ def test_catalog_treats_parquet_directory_as_stale(tmp_path):
     ("field_name", "value"),
     [
         ("source_table", " "),
+        ("fill_policy", " "),
+        ("synthetic_generation_version", " "),
+        ("symbol_bound_policy", " "),
         ("query_hash", ""),
     ],
 )
@@ -278,3 +286,12 @@ def test_export_manifest_rejects_empty_strings(tmp_path, field_name, value):
 
     with pytest.raises(ValueError):
         make_manifest(partition, parquet_path, **{field_name: value})
+
+
+@pytest.mark.parametrize("field_name", ["synthetic_1m_count_total", "incomplete_raw_bar_count"])
+def test_export_manifest_rejects_negative_counts(tmp_path, field_name):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = CanonicalPaths(root=tmp_path).parquet_path(partition)
+
+    with pytest.raises(ValueError):
+        make_manifest(partition, parquet_path, **{field_name: -1})

@@ -151,18 +151,70 @@ def test_canonical_paths_are_deterministic(tmp_path):
     paths = CanonicalPaths(root=tmp_path)
 
     assert paths.parquet_path(partition) == (
-        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "bars.parquet"
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=raw"
+        / "year=2026"
+        / "month=05"
+        / "bars.parquet"
     )
     assert paths.published_parquet_path(partition, "abc123") == (
-        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "bars.abc123.parquet"
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=raw"
+        / "year=2026"
+        / "month=05"
+        / "bars.abc123.parquet"
     )
     assert paths.manifest_path(partition) == (
-        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "manifest.json"
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=raw"
+        / "year=2026"
+        / "month=05"
+        / "manifest.json"
     )
     assert paths.lock_path(partition) == (
-        tmp_path / "canonical_bars" / "_locks" / "timeframe=1h__year=2026__month=05.lock"
+        tmp_path
+        / "canonical_bars"
+        / "_locks"
+        / "timeframe=1h__fill_policy=raw__year=2026__month=05.lock"
     )
-    assert paths.catalog_path("1h") == tmp_path / "canonical_bars" / "_catalog" / "timeframe=1h.json"
+    assert paths.catalog_path("1h") == (
+        tmp_path / "canonical_bars" / "_catalog" / "timeframe=1h" / "fill_policy=raw.json"
+    )
+
+
+def test_canonical_paths_include_fill_policy_identity(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+
+    assert paths.partition_dir(partition) == (
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=prev_close_zero_volume"
+        / "year=2026"
+        / "month=05"
+    )
+    assert paths.catalog_path("1h") == (
+        tmp_path
+        / "canonical_bars"
+        / "_catalog"
+        / "timeframe=1h"
+        / "fill_policy=prev_close_zero_volume.json"
+    )
+    assert paths.lock_path(partition).name == (
+        "timeframe=1h__fill_policy=prev_close_zero_volume__year=2026__month=05.lock"
+    )
+
+
+def test_canonical_paths_reject_invalid_fill_policy(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported fill_policy"):
+        CanonicalPaths(root=tmp_path, fill_policy=" ")
 
 
 def test_temp_paths_accept_safe_run_ids(tmp_path):
@@ -170,10 +222,22 @@ def test_temp_paths_accept_safe_run_ids(tmp_path):
     paths = CanonicalPaths(root=tmp_path)
 
     assert paths.temp_parquet_path(partition, "abc123") == (
-        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / ".bars.abc123.tmp.parquet"
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=raw"
+        / "year=2026"
+        / "month=05"
+        / ".bars.abc123.tmp.parquet"
     )
     assert paths.temp_manifest_path(partition, "abc123") == (
-        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / ".manifest.abc123.tmp.json"
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=raw"
+        / "year=2026"
+        / "month=05"
+        / ".manifest.abc123.tmp.json"
     )
 
 
