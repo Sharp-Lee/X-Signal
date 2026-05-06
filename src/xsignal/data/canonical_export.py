@@ -60,6 +60,8 @@ def partitions_for_full_history(
             and end.day == 1
             and end.hour == 0
             and end.minute == 0
+            and end.second == 0
+            and end.microsecond == 0
         ):
             break
         partitions.append(Partition(timeframe=timeframe, year=year, month=month))

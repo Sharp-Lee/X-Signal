@@ -197,6 +197,47 @@ def test_partitions_for_full_history_uses_months_for_intraday_timeframes():
     ]
 
 
+def test_partitions_for_full_history_excludes_exact_month_start_end():
+    partitions = partitions_for_full_history(
+        timeframe="1h",
+        start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 1, 0, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1h", year=2026, month=4),
+        Partition(timeframe="1h", year=2026, month=5),
+    ]
+
+
+def test_partitions_for_full_history_includes_month_for_end_with_seconds():
+    partitions = partitions_for_full_history(
+        timeframe="1h",
+        start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 1, 0, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1h", year=2026, month=4),
+        Partition(timeframe="1h", year=2026, month=5),
+        Partition(timeframe="1h", year=2026, month=6),
+    ]
+
+
+def test_partitions_for_full_history_includes_month_for_end_with_microseconds():
+    partitions = partitions_for_full_history(
+        timeframe="1h",
+        start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 1, 0, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1h", year=2026, month=4),
+        Partition(timeframe="1h", year=2026, month=5),
+        Partition(timeframe="1h", year=2026, month=6),
+    ]
+
+
 def test_partitions_for_full_history_uses_years_for_daily_timeframe():
     partitions = partitions_for_full_history(
         timeframe="1d",
