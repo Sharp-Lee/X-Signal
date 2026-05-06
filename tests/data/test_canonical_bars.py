@@ -31,7 +31,6 @@ def test_supported_timeframes_are_binance_fixed_length_intervals():
         "8h",
         "12h",
         "1d",
-        "3d",
     }
     assert SUPPORTED_TIMEFRAMES == set(FIXED_TIMEFRAME_SPECS)
 
@@ -43,10 +42,10 @@ def test_timeframe_specs_define_clickhouse_interval_and_partition_grain():
         clickhouse_interval="INTERVAL 15 minute",
         partition_grain="month",
     )
-    assert timeframe_spec("3d") == TimeframeSpec(
-        name="3d",
-        minutes=4320,
-        clickhouse_interval="INTERVAL 3 day",
+    assert timeframe_spec("1d") == TimeframeSpec(
+        name="1d",
+        minutes=1440,
+        clickhouse_interval="INTERVAL 1 day",
         partition_grain="year",
     )
 
@@ -74,7 +73,7 @@ def test_expected_bar_counts_cover_all_fixed_intervals():
     assert expected_1m_count("1m") == 1
     assert expected_1m_count("30m") == 30
     assert expected_1m_count("12h") == 720
-    assert expected_1m_count("3d") == 4320
+    assert expected_1m_count("1d") == 1440
 
 
 def test_fill_policy_defaults_and_validation():
@@ -111,8 +110,8 @@ def test_yearly_partition_rejects_month():
         Partition(timeframe="1d", year=2026, month=5)
 
 
-def test_three_day_partition_rejects_month():
-    with pytest.raises(ValueError, match="Yearly partitions"):
+def test_three_day_timeframe_is_not_supported_in_first_phase():
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
         Partition(timeframe="3d", year=2026, month=5)
 
 

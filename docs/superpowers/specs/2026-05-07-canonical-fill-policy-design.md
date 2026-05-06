@@ -105,9 +105,8 @@ Recommended first implementation scope:
 - `8h`
 - `12h`
 - `1d`
-- `3d`
 
-Defer `1w` and `1M` until their Binance boundary semantics are separately validated. Monthly expected counts are dynamic, and weekly alignment must match Binance exactly before they become canonical.
+Defer `3d`, `1w`, and `1M` until their Binance boundary semantics are separately validated. `3d` buckets need explicit cross-year alignment rules, monthly expected counts are dynamic, and weekly alignment must match Binance exactly before they become canonical.
 
 ## Storage Layout
 

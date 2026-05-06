@@ -25,7 +25,6 @@ FIXED_TIMEFRAME_SPECS = {
     "8h": TimeframeSpec("8h", 480, "INTERVAL 8 hour", "month"),
     "12h": TimeframeSpec("12h", 720, "INTERVAL 12 hour", "month"),
     "1d": TimeframeSpec("1d", 1440, "INTERVAL 1 day", "year"),
-    "3d": TimeframeSpec("3d", 4320, "INTERVAL 3 day", "year"),
 }
 SUPPORTED_TIMEFRAMES = set(FIXED_TIMEFRAME_SPECS)
 EXPECTED_1M_COUNTS = {name: spec.minutes for name, spec in FIXED_TIMEFRAME_SPECS.items()}

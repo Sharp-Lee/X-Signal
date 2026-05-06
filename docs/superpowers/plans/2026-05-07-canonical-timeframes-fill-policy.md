@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend canonical exports to all fixed-length Binance USD-M kline intervals and add explicit raw versus filled dataset semantics.
+**Goal:** Extend canonical exports to the boundary-safe fixed-length Binance USD-M kline intervals in this phase and add explicit raw versus filled dataset semantics.
 
 **Architecture:** Keep ClickHouse as the authoritative 1m source and keep canonical Parquet as the reusable strategy data layer. Add `fill_policy` to the canonical dataset identity so raw bars and synthetic-filled bars are stored, validated, cataloged, and reused independently. Generate fixed-length timeframe SQL from metadata instead of hard-coded `1h`, `4h`, and `1d` branches.
 
@@ -12,13 +12,13 @@
 
 ## Scope
 
-Implement fixed-length Binance intervals:
+Implement boundary-safe fixed-length Binance intervals:
 
 ```text
-1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d
+1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d
 ```
 
-Do not implement `1w` or `1M` in this plan. Weekly and monthly Binance boundary semantics require separate validation before becoming canonical.
+Do not implement `3d`, `1w`, or `1M` in this plan. `3d` buckets need explicit cross-year alignment rules, and weekly/monthly Binance boundary semantics require separate validation before becoming canonical.
 
 Implement fill policies:
 
@@ -99,7 +99,6 @@ def test_supported_timeframes_are_binance_fixed_length_intervals():
         "8h",
         "12h",
         "1d",
-        "3d",
     }
 
 
@@ -110,10 +109,10 @@ def test_timeframe_specs_define_clickhouse_interval_and_partition_grain():
         clickhouse_interval="INTERVAL 15 minute",
         partition_grain="month",
     )
-    assert timeframe_spec("3d") == TimeframeSpec(
-        name="3d",
-        minutes=4320,
-        clickhouse_interval="INTERVAL 3 day",
+    assert timeframe_spec("1d") == TimeframeSpec(
+        name="1d",
+        minutes=1440,
+        clickhouse_interval="INTERVAL 1 day",
         partition_grain="year",
     )
 
@@ -122,7 +121,7 @@ def test_expected_bar_counts_cover_all_fixed_intervals():
     assert expected_1m_count("1m") == 1
     assert expected_1m_count("30m") == 30
     assert expected_1m_count("12h") == 720
-    assert expected_1m_count("3d") == 4320
+    assert expected_1m_count("1d") == 1440
 
 
 def test_fill_policy_defaults_and_validation():
@@ -134,6 +133,11 @@ def test_fill_policy_defaults_and_validation():
 def test_fill_policy_rejects_unknown_policy():
     with pytest.raises(ValueError, match="Unsupported fill_policy"):
         validate_fill_policy("forward_volume")
+
+
+def test_three_day_timeframe_is_deferred_until_bucket_boundaries_are_validated():
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        timeframe_spec("3d")
 ```
 
 - [ ] **Step 2: Run tests and verify they fail**
@@ -172,7 +176,6 @@ FIXED_TIMEFRAME_SPECS = {
     "8h": TimeframeSpec("8h", 480, "INTERVAL 8 hour", "month"),
     "12h": TimeframeSpec("12h", 720, "INTERVAL 12 hour", "month"),
     "1d": TimeframeSpec("1d", 1440, "INTERVAL 1 day", "year"),
-    "3d": TimeframeSpec("3d", 4320, "INTERVAL 3 day", "year"),
 }
 
 SUPPORTED_TIMEFRAMES = set(FIXED_TIMEFRAME_SPECS)
@@ -428,7 +431,6 @@ Add to `tests/data/test_query_templates.py`:
         ("2h", "INTERVAL 2 hour", 120),
         ("8h", "INTERVAL 8 hour", 480),
         ("12h", "INTERVAL 12 hour", 720),
-        ("3d", "INTERVAL 3 day", 4320),
     ],
 )
 def test_build_raw_aggregate_query_supports_fixed_binance_intervals(
@@ -1087,16 +1089,16 @@ def test_partitions_for_full_history_uses_months_for_12h_timeframe():
     ]
 
 
-def test_partitions_for_full_history_uses_years_for_3d_timeframe():
+def test_partitions_for_full_history_uses_years_for_1d_timeframe():
     partitions = partitions_for_full_history(
-        timeframe="3d",
+        timeframe="1d",
         start=datetime(2025, 12, 31, tzinfo=timezone.utc),
         end=datetime(2026, 5, 6, tzinfo=timezone.utc),
     )
 
     assert partitions == [
-        Partition(timeframe="3d", year=2025),
-        Partition(timeframe="3d", year=2026),
+        Partition(timeframe="1d", year=2025),
+        Partition(timeframe="1d", year=2026),
     ]
 ```
 
@@ -1108,7 +1110,7 @@ Run:
 /Users/wukong/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m pytest tests/data/test_canonical_export.py -q
 ```
 
-Expected: FAIL because only `1d` is treated as yearly.
+Expected: FAIL if partition discovery is still hard-coded instead of using timeframe metadata.
 
 - [ ] **Step 3: Use timeframe metadata for partition grain**
 
@@ -1119,7 +1121,7 @@ if timeframe_spec(timeframe).partition_grain == "year":
     ...
 ```
 
-Keep the exact-year-boundary exclusion logic from the current `1d` implementation.
+Keep the exact-year-boundary exclusion logic from the current `1d` implementation. `3d`, `1w`, and `1M` stay unsupported until bucket-boundary semantics are validated.
 
 - [ ] **Step 4: Run partition tests**
 
