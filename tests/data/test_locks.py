@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from xsignal.data.locks import ExportLock, atomic_publish
 
 
