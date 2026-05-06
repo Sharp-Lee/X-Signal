@@ -251,6 +251,31 @@ def test_partitions_for_full_history_uses_years_for_daily_timeframe():
     ]
 
 
+def test_partitions_for_full_history_excludes_exact_year_start_end_for_daily_timeframe():
+    partitions = partitions_for_full_history(
+        timeframe="1d",
+        start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 1, 0, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1d", year=2025),
+    ]
+
+
+def test_partitions_for_full_history_includes_year_for_daily_end_with_microseconds():
+    partitions = partitions_for_full_history(
+        timeframe="1d",
+        start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 1, 0, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="1d", year=2025),
+        Partition(timeframe="1d", year=2026),
+    ]
+
+
 def test_partitions_for_full_history_normalizes_bounds_to_utc():
     utc_plus_8 = timezone(timedelta(hours=8))
 

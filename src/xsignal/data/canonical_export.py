@@ -48,7 +48,17 @@ def partitions_for_full_history(
 
     partitions: list[Partition] = []
     if timeframe == "1d":
-        for year in range(start.year, end.year + 1):
+        last_year = end.year
+        if (
+            end.month == 1
+            and end.day == 1
+            and end.hour == 0
+            and end.minute == 0
+            and end.second == 0
+            and end.microsecond == 0
+        ):
+            last_year -= 1
+        for year in range(start.year, last_year + 1):
             partitions.append(Partition(timeframe=timeframe, year=year))
         return partitions
 
