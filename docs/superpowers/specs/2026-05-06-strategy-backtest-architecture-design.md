@@ -8,7 +8,7 @@ X-Signal is designed for fast strategy research, not for a general-purpose backt
 
 The guiding rule is:
 
-> Keep raw data authoritative in ClickHouse, precompute only high-reuse standard bars, then let each strategy build its own optimal in-memory layout and backtest kernel.
+> Keep raw data authoritative in ClickHouse, make deduplicated standard bars available through a shared export function, then let each strategy build its own optimal in-memory layout and backtest kernel.
 
 ## Current Data Context
 
@@ -40,10 +40,11 @@ These abstractions can be introduced later only when repeated strategy work prov
 
 ## Architecture
 
-The system has four layers:
+The system has five stages:
 
 ```text
 ClickHouse raw 1m data
+  -> canonical export and availability service
   -> canonical standard bars
   -> strategy-specific prepared arrays
   -> custom high-performance backtest kernels
@@ -58,7 +59,7 @@ Responsibilities:
 - Store raw 1m klines.
 - Preserve source and version metadata.
 - Support deterministic extraction for historical research.
-- Provide standard aggregation queries for canonical bars.
+- Provide standard aggregation queries for the canonical export service.
 
 Deduplication rule:
 
@@ -77,10 +78,30 @@ The project should maintain global reusable Parquet datasets for high-reuse time
 
 These are worth precomputing because many strategies will test across hundreds of symbols and these timeframes. Precomputing avoids repeated database scans and standardizes bar semantics across strategies.
 
+Strategies should not issue ad hoc ClickHouse exports directly. Any strategy that needs bar data should call a shared availability function first:
+
+```text
+ensure_canonical_bars(timeframe, universe="all", range="full_history")
+```
+
+Default behavior:
+
+- Export the requested timeframe for the full available symbol universe.
+- Export the full available history.
+- Reuse already completed Parquet partitions.
+- Export only missing, invalid, stale, or explicitly refreshed partitions.
+- Return a dataset handle or manifest path that strategy preparation can read.
+
+The default full-universe, full-history behavior prevents the project from creating many nearly identical strategy-specific Parquet datasets. A strategy can still read only the symbols and dates it needs after the canonical dataset exists.
+
 Initial layout:
 
 ```text
 data/canonical_bars/
+  _catalog/
+    timeframe=1h.json
+    timeframe=4h.json
+    timeframe=1d.json
   timeframe=1h/
     year=2025/
       month=01/
@@ -93,6 +114,14 @@ data/canonical_bars/
     year=2025/
       bars.parquet
 ```
+
+The catalog records which partitions are complete for each timeframe. A partition is considered complete only if:
+
+- The Parquet file exists.
+- The export manifest exists.
+- The source table, timeframe, date range, deduplication mode, aggregation semantics, and dataset version match the current request.
+- Row counts and basic data quality checks pass.
+- The export completed atomically, without leaving a partial file in place.
 
 Required columns:
 
@@ -127,6 +156,29 @@ Aggregation semantics:
 - `is_complete`: whether the interval has the expected number of 1m bars
 
 The canonical layer is not a full feature store. It should not contain strategy-specific indicators unless several strategies repeatedly need exactly the same feature and semantics.
+
+### Canonical Export Service
+
+The canonical export service is a small shared data utility, not a backtesting engine. Its purpose is to make deduplicated Parquet bars available before strategy preparation starts.
+
+Responsibilities:
+
+- Check whether the requested canonical timeframe is already exported.
+- Acquire an export lock so concurrent strategies do not build the same partition twice.
+- Query ClickHouse with deterministic deduplication.
+- Aggregate 1m bars into the requested timeframe.
+- Write Parquet to a temporary path first, then atomically publish it.
+- Write a partition manifest with source metadata, row counts, query hash, and export timestamp.
+- Update the timeframe catalog after successful validation.
+- Return paths and metadata to the caller.
+
+Supported canonical timeframes at project start:
+
+- `1h`
+- `4h`
+- `1d`
+
+Additional timeframes should be added only after repeated strategy usage proves they are worth global reuse.
 
 ### 3. Strategy Preparation Layer
 
@@ -201,6 +253,8 @@ Suggested fields:
 - output paths
 - runtime environment
 
+The run manifest should reference the canonical export manifest rather than duplicating all export details. This keeps strategy runs tied to the exact Parquet dataset they used.
+
 This manifest is the main shared discipline that lets the project stay flexible without becoming messy.
 
 ## Refresh Model
@@ -213,6 +267,8 @@ Recommended policy:
 - Current month: refresh regularly because late or duplicate records may arrive.
 - When ingestion bugs are fixed: rebuild affected partitions.
 - When aggregation semantics change: create a new dataset version rather than silently replacing old data.
+- When a strategy asks for a timeframe, call the canonical export service first; the service should decide whether the existing Parquet is complete enough to reuse.
+- Never overwrite a completed partition in place. Build a replacement in a temporary location, validate it, then atomically swap or publish it as a new dataset version.
 
 ## Performance Strategy
 
@@ -225,11 +281,12 @@ Numpy, memory maps, Arrow arrays, Numba, Rust, or C++ are the hot-loop layer. Th
 Expected workflow for a new strategy:
 
 ```text
-1. Select canonical timeframe and universe.
-2. Generate strategy-specific arrays.
-3. Run parameter sweeps on arrays.
-4. Save manifest and reports.
-5. Promote only truly reusable logic back into shared utilities.
+1. Select canonical timeframe.
+2. Call ensure_canonical_bars(timeframe), defaulting to all symbols and full history.
+3. Read the returned Parquet dataset and generate strategy-specific arrays.
+4. Run parameter sweeps on arrays.
+5. Save manifest and reports.
+6. Promote only truly reusable logic back into shared utilities.
 ```
 
 ## Error Handling And Data Quality
@@ -258,6 +315,9 @@ Shared tests:
 - Deduplication returns one row per `(symbol, open_time)`.
 - Aggregated OHLCV bars match hand-calculated fixtures.
 - `bar_count` and `is_complete` are correct.
+- `ensure_canonical_bars` reuses complete partitions without re-exporting them.
+- `ensure_canonical_bars` exports missing partitions and publishes them atomically.
+- Concurrent calls for the same timeframe and partition respect the export lock.
 - Canonical export partition paths are deterministic.
 - Manifests include required fields.
 
@@ -287,6 +347,9 @@ src/
     data/
       clickhouse.py
       canonical_bars.py
+      canonical_export.py
+      catalog.py
+      locks.py
     runs/
       manifest.py
     metrics/
@@ -297,6 +360,8 @@ After that, each real strategy should be implemented as its own folder with its 
 
 ## Design Decision
 
-The project should precompute global `1h`, `4h`, and `1d` canonical Parquet bars from ClickHouse 1m data because these timeframes are expected to be reused across many strategies and hundreds of symbols.
+The project should provide a shared deduplicated canonical export function. When any strategy needs a timeframe, it first checks whether the corresponding Parquet dataset is complete. If not, the export function generates the missing canonical bars from ClickHouse. The default request is full symbol universe and full available history for the specified timeframe.
+
+The project should maintain global `1h`, `4h`, and `1d` canonical Parquet bars from ClickHouse 1m data because these timeframes are expected to be reused across many strategies and hundreds of symbols.
 
 The project should not build a universal backtest engine. It should standardize data extraction, canonical bars, manifests, and metrics, while leaving every strategy free to implement its own high-performance prepared arrays and backtest kernel.
