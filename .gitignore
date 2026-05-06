@@ -7,3 +7,6 @@ __pycache__/
 /data/canonical_bars/
 /data/tmp/
 /runs/
+*.egg-info/
+build/
+dist/
