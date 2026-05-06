@@ -8,6 +8,7 @@ from xsignal.data.canonical_bars import (
     Partition,
     expected_1m_count,
 )
+from xsignal.data.paths import CanonicalPaths
 
 
 def test_supported_timeframes_are_explicit():
@@ -84,3 +85,19 @@ def test_partition_from_datetime_normalizes_to_utc():
     assert partition.year == 2026
     assert partition.month == 4
     assert partition.key == "timeframe=1h/year=2026/month=04"
+
+
+def test_canonical_paths_are_deterministic(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path)
+
+    assert paths.parquet_path(partition) == (
+        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "bars.parquet"
+    )
+    assert paths.manifest_path(partition) == (
+        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / "manifest.json"
+    )
+    assert paths.lock_path(partition) == (
+        tmp_path / "canonical_bars" / "_locks" / "timeframe=1h__year=2026__month=05.lock"
+    )
+    assert paths.catalog_path("1h") == tmp_path / "canonical_bars" / "_catalog" / "timeframe=1h.json"
