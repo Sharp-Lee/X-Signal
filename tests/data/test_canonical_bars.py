@@ -101,3 +101,31 @@ def test_canonical_paths_are_deterministic(tmp_path):
         tmp_path / "canonical_bars" / "_locks" / "timeframe=1h__year=2026__month=05.lock"
     )
     assert paths.catalog_path("1h") == tmp_path / "canonical_bars" / "_catalog" / "timeframe=1h.json"
+
+
+def test_temp_paths_accept_safe_run_ids(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path)
+
+    assert paths.temp_parquet_path(partition, "abc123") == (
+        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / ".bars.abc123.tmp.parquet"
+    )
+    assert paths.temp_manifest_path(partition, "abc123") == (
+        tmp_path / "canonical_bars" / "timeframe=1h" / "year=2026" / "month=05" / ".manifest.abc123.tmp.json"
+    )
+
+
+def test_temp_parquet_path_rejects_unsafe_run_id(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path)
+
+    with pytest.raises(ValueError, match="run_id"):
+        paths.temp_parquet_path(partition, "x/../../escape")
+
+
+def test_temp_manifest_path_rejects_unsafe_run_id(tmp_path):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    paths = CanonicalPaths(root=tmp_path)
+
+    with pytest.raises(ValueError, match="run_id"):
+        paths.temp_manifest_path(partition, "..")

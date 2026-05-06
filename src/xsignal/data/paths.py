@@ -6,6 +6,12 @@ from pathlib import Path
 from xsignal.data.canonical_bars import Partition, validate_timeframe
 
 
+def _validate_run_id(run_id: str) -> str:
+    if not run_id or "/" in run_id or "\\" in run_id or ".." in run_id:
+        raise ValueError("run_id must be non-empty and must not contain path separators or '..'")
+    return run_id
+
+
 @dataclass(frozen=True)
 class CanonicalPaths:
     root: Path
@@ -24,12 +30,14 @@ class CanonicalPaths:
         return self.partition_dir(partition) / "bars.parquet"
 
     def temp_parquet_path(self, partition: Partition, run_id: str) -> Path:
+        run_id = _validate_run_id(run_id)
         return self.partition_dir(partition) / f".bars.{run_id}.tmp.parquet"
 
     def manifest_path(self, partition: Partition) -> Path:
         return self.partition_dir(partition) / "manifest.json"
 
     def temp_manifest_path(self, partition: Partition, run_id: str) -> Path:
+        run_id = _validate_run_id(run_id)
         return self.partition_dir(partition) / f".manifest.{run_id}.tmp.json"
 
     def lock_path(self, partition: Partition) -> Path:
