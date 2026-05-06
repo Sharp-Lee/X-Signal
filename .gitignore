@@ -4,6 +4,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
-data/canonical_bars/
-data/tmp/
-runs/
+/data/canonical_bars/
+/data/tmp/
+/runs/
