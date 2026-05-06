@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-from xsignal.data.canonical_bars import expected_1m_count, timeframe_spec
+from xsignal.data.canonical_bars import expected_1m_count, timeframe_spec, validate_fill_policy
 
 
 CLICKHOUSE_SOURCE_TABLE = "xgate.klines_1m"
@@ -23,7 +23,11 @@ def _interval_sql(timeframe: str) -> str:
     return timeframe_spec(timeframe).clickhouse_interval
 
 
-def build_aggregate_query(timeframe: str, start: datetime, end: datetime) -> str:
+def build_aggregate_query(timeframe: str, start: datetime, end: datetime, fill_policy: str = "raw") -> str:
+    fill_policy = validate_fill_policy(fill_policy)
+    if fill_policy == "prev_close_zero_volume":
+        raise NotImplementedError("prev_close_zero_volume query is implemented in Task 4")
+
     start_utc = _normalize_utc_datetime(start)
     end_utc = _normalize_utc_datetime(end)
     if end_utc <= start_utc:
@@ -47,7 +51,11 @@ SELECT
     taker_buy_volume,
     taker_buy_quote_volume,
     bar_count,
-    is_complete
+    toUInt16(0) AS synthetic_1m_count,
+    toUInt16({expected_count}) AS expected_1m_count,
+    is_complete,
+    0 AS has_synthetic,
+    'raw' AS fill_policy
 FROM
 (
     SELECT

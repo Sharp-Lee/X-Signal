@@ -10,6 +10,7 @@ def test_build_aggregate_query_uses_final_and_expected_interval():
         timeframe="1h",
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        fill_policy="raw",
     )
 
     assert sql == """
@@ -26,7 +27,11 @@ SELECT
     taker_buy_volume,
     taker_buy_quote_volume,
     bar_count,
-    is_complete
+    toUInt16(0) AS synthetic_1m_count,
+    toUInt16(60) AS expected_1m_count,
+    is_complete,
+    0 AS has_synthetic,
+    'raw' AS fill_policy
 FROM
 (
     SELECT
@@ -61,6 +66,7 @@ def test_build_aggregate_query_groups_by_non_conflicting_bucket_alias():
         timeframe="1h",
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        fill_policy="raw",
     )
 
     assert "AS bucket_open_time" in sql
@@ -73,10 +79,14 @@ def test_build_aggregate_query_groups_by_non_conflicting_bucket_alias():
 @pytest.mark.parametrize(
     ("timeframe", "interval_sql", "expected_count"),
     [
+        ("1m", "INTERVAL 1 minute", 1),
+        ("3m", "INTERVAL 3 minute", 3),
         ("15m", "INTERVAL 15 minute", 15),
         ("1h", "INTERVAL 1 hour", 60),
         ("2h", "INTERVAL 2 hour", 120),
         ("4h", "INTERVAL 4 hour", 240),
+        ("8h", "INTERVAL 8 hour", 480),
+        ("12h", "INTERVAL 12 hour", 720),
         ("1d", "INTERVAL 1 day", 1440),
     ],
 )
@@ -85,10 +95,15 @@ def test_build_aggregate_query_uses_supported_intervals(timeframe, interval_sql,
         timeframe=timeframe,
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        fill_policy="raw",
     )
 
     assert f"toStartOfInterval(k.open_time, {interval_sql}, 'UTC') AS bucket_open_time" in sql
     assert f"bar_count = {expected_count} AS is_complete" in sql
+    assert f"toUInt16({expected_count}) AS expected_1m_count" in sql
+    assert "toUInt16(0) AS synthetic_1m_count" in sql
+    assert "0 AS has_synthetic" in sql
+    assert "'raw' AS fill_policy" in sql
     assert "argMin(open, k.open_time)" in sql
     assert "argMax(close, k.open_time)" in sql
     assert "FROM xgate.klines_1m AS k FINAL" in sql
@@ -102,6 +117,26 @@ def test_build_aggregate_query_rejects_unsupported_timeframe():
             timeframe="1w",
             start=datetime(2026, 5, 1, tzinfo=timezone.utc),
             end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_build_aggregate_query_rejects_unsupported_fill_policy():
+    with pytest.raises(ValueError, match="Unsupported fill_policy"):
+        build_aggregate_query(
+            timeframe="1h",
+            start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            fill_policy="forward_volume",
+        )
+
+
+def test_build_aggregate_query_defers_prev_close_zero_volume_policy():
+    with pytest.raises(NotImplementedError, match="prev_close_zero_volume query is implemented in Task 4"):
+        build_aggregate_query(
+            timeframe="1h",
+            start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            fill_policy="prev_close_zero_volume",
         )
 
 
