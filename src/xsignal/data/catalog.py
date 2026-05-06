@@ -32,7 +32,7 @@ class Catalog:
             return None
         try:
             return ExportManifest.model_validate_json(manifest_path.read_text())
-        except (json.JSONDecodeError, ValidationError, ValueError):
+        except (OSError, json.JSONDecodeError, ValidationError, ValueError):
             return None
 
     def status(self, partition: Partition, dataset_version: str) -> PartitionStatus:

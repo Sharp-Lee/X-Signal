@@ -104,7 +104,11 @@ def ensure_canonical_bars(
             temp_manifest = paths.temp_manifest_path(partition, run_id)
             temp_manifest.parent.mkdir(parents=True, exist_ok=True)
             temp_manifest.write_text(manifest.model_dump_json(indent=2))
-            atomic_publish(temp_manifest, paths.manifest_path(partition))
+            try:
+                atomic_publish(temp_manifest, paths.manifest_path(partition))
+            except Exception:
+                temp_manifest.unlink(missing_ok=True)
+                raise
             catalog.mark_complete(manifest)
 
     return CanonicalDataset(request=request, root=paths.base, partitions=partitions)

@@ -117,6 +117,18 @@ def test_catalog_treats_missing_manifest_fields_as_stale(tmp_path):
     assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
 
 
+def test_catalog_treats_manifest_directory_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path)
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.parquet_path(partition)
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"fake-parquet")
+    paths.manifest_path(partition).mkdir()
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
+
+
 def test_catalog_treats_parquet_directory_as_stale(tmp_path):
     paths = CanonicalPaths(root=tmp_path)
     catalog = Catalog(paths=paths)
