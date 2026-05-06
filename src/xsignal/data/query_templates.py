@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-from xsignal.data.canonical_bars import expected_1m_count, validate_timeframe
+from xsignal.data.canonical_bars import expected_1m_count, timeframe_spec
 
 
 CLICKHOUSE_SOURCE_TABLE = "xgate.klines_1m"
@@ -20,12 +20,7 @@ def _format_clickhouse_datetime(value: datetime) -> str:
 
 
 def _interval_sql(timeframe: str) -> str:
-    validate_timeframe(timeframe)
-    if timeframe == "1h":
-        return "INTERVAL 1 hour"
-    if timeframe == "4h":
-        return "INTERVAL 4 hour"
-    return "INTERVAL 1 day"
+    return timeframe_spec(timeframe).clickhouse_interval
 
 
 def build_aggregate_query(timeframe: str, start: datetime, end: datetime) -> str:

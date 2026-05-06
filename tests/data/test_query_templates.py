@@ -73,9 +73,12 @@ def test_build_aggregate_query_groups_by_non_conflicting_bucket_alias():
 @pytest.mark.parametrize(
     ("timeframe", "interval_sql", "expected_count"),
     [
+        ("15m", "INTERVAL 15 minute", 15),
         ("1h", "INTERVAL 1 hour", 60),
+        ("2h", "INTERVAL 2 hour", 120),
         ("4h", "INTERVAL 4 hour", 240),
         ("1d", "INTERVAL 1 day", 1440),
+        ("3d", "INTERVAL 3 day", 4320),
     ],
 )
 def test_build_aggregate_query_uses_supported_intervals(timeframe, interval_sql, expected_count):
@@ -97,7 +100,7 @@ def test_build_aggregate_query_uses_supported_intervals(timeframe, interval_sql,
 def test_build_aggregate_query_rejects_unsupported_timeframe():
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         build_aggregate_query(
-            timeframe="2h",
+            timeframe="1w",
             start=datetime(2026, 5, 1, tzinfo=timezone.utc),
             end=datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
