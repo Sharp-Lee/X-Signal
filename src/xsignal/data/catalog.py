@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 
+from pydantic import ValidationError
+
 from xsignal.data.canonical_bars import Partition
 from xsignal.data.paths import CanonicalPaths
 from xsignal.runs.manifest import ExportManifest
@@ -23,8 +25,14 @@ class Catalog:
         manifest_path = self.paths.manifest_path(partition)
         if not parquet_path.exists() or not manifest_path.exists():
             return PartitionStatus.MISSING
+        if not parquet_path.is_file():
+            return PartitionStatus.STALE
 
-        manifest = ExportManifest.model_validate_json(manifest_path.read_text())
+        try:
+            manifest = ExportManifest.model_validate_json(manifest_path.read_text())
+        except (json.JSONDecodeError, ValidationError, ValueError):
+            return PartitionStatus.STALE
+
         if manifest.dataset_version != dataset_version:
             return PartitionStatus.STALE
         if manifest.timeframe != partition.timeframe:

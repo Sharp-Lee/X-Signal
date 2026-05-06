@@ -1,24 +1,28 @@
 from pathlib import Path
 
+import pytest
+
 from xsignal.data.canonical_bars import Partition
 from xsignal.data.catalog import Catalog, PartitionStatus
 from xsignal.data.paths import CanonicalPaths
 from xsignal.runs.manifest import ExportManifest
 
 
-def make_manifest(partition: Partition, parquet_path: Path) -> ExportManifest:
-    return ExportManifest(
-        dataset_version="v1",
-        source_table="xgate.klines_1m",
-        timeframe=partition.timeframe,
-        partition_key=partition.key,
-        deduplication_mode="FINAL",
-        aggregation_semantics_version="ohlcv-v1",
-        query_hash="abc123",
-        row_count=10,
-        parquet_path=str(parquet_path),
-        exported_at="2026-05-06T00:00:00Z",
-    )
+def make_manifest(partition: Partition, parquet_path: Path, **overrides: object) -> ExportManifest:
+    payload = {
+        "dataset_version": "v1",
+        "source_table": "xgate.klines_1m",
+        "timeframe": partition.timeframe,
+        "partition_key": partition.key,
+        "deduplication_mode": "FINAL",
+        "aggregation_semantics_version": "ohlcv-v1",
+        "query_hash": "abc123",
+        "row_count": 10,
+        "parquet_path": str(parquet_path),
+        "exported_at": "2026-05-06T00:00:00Z",
+    }
+    payload.update(overrides)
+    return ExportManifest(**payload)
 
 
 def test_catalog_marks_partition_complete(tmp_path):
@@ -45,3 +49,54 @@ def test_catalog_treats_missing_manifest_as_missing(tmp_path):
     paths.parquet_path(partition).write_bytes(b"fake-parquet")
 
     assert catalog.status(partition, dataset_version="v1") == PartitionStatus.MISSING
+
+
+def test_catalog_treats_corrupt_manifest_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path)
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.parquet_path(partition)
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"fake-parquet")
+    paths.manifest_path(partition).write_text("{bad json")
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
+
+
+def test_catalog_treats_missing_manifest_fields_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path)
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.parquet_path(partition)
+    parquet_path.parent.mkdir(parents=True)
+    parquet_path.write_bytes(b"fake-parquet")
+    paths.manifest_path(partition).write_text("{}")
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
+
+
+def test_catalog_treats_parquet_directory_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path)
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.parquet_path(partition)
+    parquet_path.mkdir(parents=True)
+    manifest = make_manifest(partition, parquet_path)
+    paths.manifest_path(partition).write_text(manifest.model_dump_json(indent=2))
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("source_table", " "),
+        ("query_hash", ""),
+    ],
+)
+def test_export_manifest_rejects_empty_strings(tmp_path, field_name, value):
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = CanonicalPaths(root=tmp_path).parquet_path(partition)
+
+    with pytest.raises(ValueError):
+        make_manifest(partition, parquet_path, **{field_name: value})
