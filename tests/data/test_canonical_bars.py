@@ -3,16 +3,52 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from xsignal.data.canonical_bars import (
+    FILL_POLICIES,
+    FIXED_TIMEFRAME_SPECS,
     SUPPORTED_TIMEFRAMES,
     CanonicalRequest,
+    FillPolicy,
     Partition,
+    TimeframeSpec,
     expected_1m_count,
+    timeframe_spec,
+    validate_fill_policy,
 )
 from xsignal.data.paths import CanonicalPaths
 
 
-def test_supported_timeframes_are_explicit():
-    assert SUPPORTED_TIMEFRAMES == {"1h", "4h", "1d"}
+def test_supported_timeframes_are_binance_fixed_length_intervals():
+    assert set(FIXED_TIMEFRAME_SPECS) == {
+        "1m",
+        "3m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "4h",
+        "6h",
+        "8h",
+        "12h",
+        "1d",
+        "3d",
+    }
+    assert SUPPORTED_TIMEFRAMES == set(FIXED_TIMEFRAME_SPECS)
+
+
+def test_timeframe_specs_define_clickhouse_interval_and_partition_grain():
+    assert timeframe_spec("15m") == TimeframeSpec(
+        name="15m",
+        minutes=15,
+        clickhouse_interval="INTERVAL 15 minute",
+        partition_grain="month",
+    )
+    assert timeframe_spec("3d") == TimeframeSpec(
+        name="3d",
+        minutes=4320,
+        clickhouse_interval="INTERVAL 3 day",
+        partition_grain="year",
+    )
 
 
 def test_canonical_request_defaults_to_all_symbols_full_history():
@@ -21,17 +57,36 @@ def test_canonical_request_defaults_to_all_symbols_full_history():
     assert request.timeframe == "1h"
     assert request.universe == "all"
     assert request.range_name == "full_history"
+    assert request.fill_policy == "raw"
+
+
+def test_canonical_request_validates_fill_policy():
+    with pytest.raises(ValueError, match="Unsupported fill_policy"):
+        CanonicalRequest(timeframe="1h", fill_policy="forward_volume")
 
 
 def test_rejects_unsupported_timeframe():
     with pytest.raises(ValueError, match="Unsupported timeframe"):
-        CanonicalRequest(timeframe="15m")
+        CanonicalRequest(timeframe="1w")
 
 
-def test_expected_bar_counts():
-    assert expected_1m_count("1h") == 60
-    assert expected_1m_count("4h") == 240
-    assert expected_1m_count("1d") == 1440
+def test_expected_bar_counts_cover_all_fixed_intervals():
+    assert expected_1m_count("1m") == 1
+    assert expected_1m_count("30m") == 30
+    assert expected_1m_count("12h") == 720
+    assert expected_1m_count("3d") == 4320
+
+
+def test_fill_policy_defaults_and_validation():
+    assert FILL_POLICIES == {"raw", "prev_close_zero_volume"}
+    policy: FillPolicy = validate_fill_policy("raw")
+    assert policy == "raw"
+    assert validate_fill_policy("prev_close_zero_volume") == "prev_close_zero_volume"
+
+
+def test_fill_policy_rejects_unknown_policy():
+    with pytest.raises(ValueError, match="Unsupported fill_policy"):
+        validate_fill_policy("forward_volume")
 
 
 def test_partition_from_datetime():
@@ -48,16 +103,21 @@ def test_partition_from_datetime():
 
 def test_partition_rejects_unsupported_timeframe():
     with pytest.raises(ValueError, match="Unsupported timeframe"):
-        Partition(timeframe="15m", year=2026, month=5)
+        Partition(timeframe="1w", year=2026, month=5)
 
 
-def test_daily_partition_rejects_month():
-    with pytest.raises(ValueError, match="Daily partitions"):
+def test_yearly_partition_rejects_month():
+    with pytest.raises(ValueError, match="Yearly partitions"):
         Partition(timeframe="1d", year=2026, month=5)
 
 
-def test_intraday_partition_requires_month():
-    with pytest.raises(ValueError, match="Intraday partitions"):
+def test_three_day_partition_rejects_month():
+    with pytest.raises(ValueError, match="Yearly partitions"):
+        Partition(timeframe="3d", year=2026, month=5)
+
+
+def test_monthly_partition_requires_month():
+    with pytest.raises(ValueError, match="Monthly partitions"):
         Partition(timeframe="1h", year=2026)
 
 
