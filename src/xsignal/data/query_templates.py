@@ -41,26 +41,43 @@ def build_aggregate_query(timeframe: str, start: datetime, end: datetime) -> str
     return f"""
 SELECT
     symbol,
-    toStartOfInterval(k.open_time, {interval}, 'UTC') AS open_time,
-    toFloat64(argMin(open, k.open_time)) AS open,
-    toFloat64(max(high)) AS high,
-    toFloat64(min(low)) AS low,
-    toFloat64(argMax(close, k.open_time)) AS close,
-    toFloat64(sum(volume)) AS volume,
-    toFloat64(sum(quote_volume)) AS quote_volume,
-    toUInt64(sum(trade_count)) AS trade_count,
-    toFloat64(sum(taker_buy_volume)) AS taker_buy_volume,
-    toFloat64(sum(taker_buy_quote_volume)) AS taker_buy_quote_volume,
-    toUInt16(count()) AS bar_count,
-    bar_count = {expected_count} AS is_complete
-FROM {CLICKHOUSE_SOURCE_TABLE} AS k FINAL
-WHERE k.open_time >= toDateTime('{start_sql}', 'UTC')
-  AND k.open_time < toDateTime('{end_sql}', 'UTC')
-GROUP BY
-    symbol,
-    open_time
+    bucket_open_time AS open_time,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    quote_volume,
+    trade_count,
+    taker_buy_volume,
+    taker_buy_quote_volume,
+    bar_count,
+    is_complete
+FROM
+(
+    SELECT
+        symbol,
+        toStartOfInterval(k.open_time, {interval}, 'UTC') AS bucket_open_time,
+        toFloat64(argMin(open, k.open_time)) AS open,
+        toFloat64(max(high)) AS high,
+        toFloat64(min(low)) AS low,
+        toFloat64(argMax(close, k.open_time)) AS close,
+        toFloat64(sum(volume)) AS volume,
+        toFloat64(sum(quote_volume)) AS quote_volume,
+        toUInt64(sum(trade_count)) AS trade_count,
+        toFloat64(sum(taker_buy_volume)) AS taker_buy_volume,
+        toFloat64(sum(taker_buy_quote_volume)) AS taker_buy_quote_volume,
+        toUInt16(count()) AS bar_count,
+        bar_count = {expected_count} AS is_complete
+    FROM {CLICKHOUSE_SOURCE_TABLE} AS k FINAL
+    WHERE k.open_time >= toDateTime('{start_sql}', 'UTC')
+      AND k.open_time < toDateTime('{end_sql}', 'UTC')
+    GROUP BY
+        symbol,
+        bucket_open_time
+)
 ORDER BY
-    open_time,
+    bucket_open_time,
     symbol
 """.strip()
 
