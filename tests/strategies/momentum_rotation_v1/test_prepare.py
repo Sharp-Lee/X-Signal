@@ -99,6 +99,51 @@ def test_prepare_daily_arrays_marks_missing_intraday_close_incomplete():
     assert np.isnan(prepared.close_1h[1, 0])
 
 
+def test_prepare_daily_arrays_preserves_incomplete_daily_price_for_pnl():
+    symbols = ["BTCUSDT"]
+    day0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    daily_rows = rows(
+        symbols,
+        [day0, day0 + timedelta(days=1)],
+        30.0,
+        1440,
+    )
+    daily_rows[1]["bar_count"] = 1439
+    daily_rows[1]["is_complete"] = False
+    hourly_opens = [day0 + timedelta(hours=i) for i in range(48)]
+    four_hour_opens = [day0 + timedelta(hours=4 * i) for i in range(12)]
+
+    prepared = prepare_daily_arrays(
+        bars_1h=table_for("1h", rows(symbols, hourly_opens, 10.0, 60)),
+        bars_4h=table_for("4h", rows(symbols, four_hour_opens, 20.0, 240)),
+        bars_1d=table_for("1d", daily_rows),
+    )
+
+    assert prepared.close_1d[1, 0] == 31.0
+    assert not prepared.complete_1d[1, 0]
+    assert not prepared.quality_1d_30d[1, 0]
+
+
+def test_prepare_daily_arrays_forward_fills_missing_daily_price_for_pnl_only():
+    day0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    daily_rows = rows(["BTCUSDT"], [day0], 30.0, 1440)
+    daily_rows.extend(rows(["ETHUSDT"], [day0, day0 + timedelta(days=1)], 50.0, 1440))
+    hourly_opens = [day0 + timedelta(hours=i) for i in range(48)]
+    four_hour_opens = [day0 + timedelta(hours=4 * i) for i in range(12)]
+
+    prepared = prepare_daily_arrays(
+        bars_1h=table_for("1h", rows(["BTCUSDT", "ETHUSDT"], hourly_opens, 10.0, 60)),
+        bars_4h=table_for("4h", rows(["BTCUSDT", "ETHUSDT"], four_hour_opens, 20.0, 240)),
+        bars_1d=table_for("1d", daily_rows),
+    )
+
+    btc_index = prepared.symbols.index("BTCUSDT")
+    assert prepared.rebalance_times.tolist() == [day0 + timedelta(days=1), day0 + timedelta(days=2)]
+    assert prepared.close_1d[1, btc_index] == 30.0
+    assert not prepared.complete_1d[1, btc_index]
+    assert not prepared.quality_1d_30d[1, btc_index]
+
+
 def test_save_and_load_prepared_arrays_round_trip(tmp_path):
     prepared = prepare_daily_arrays(
         bars_1h=table_for(

@@ -48,6 +48,10 @@ def _is_good(row: dict | None) -> bool:
     )
 
 
+def _has_price(row: dict | None) -> bool:
+    return bool(row and row["close"] is not None and float(row["close"]) > 0)
+
+
 def _window_quality(
     rows: dict[tuple[str, object], dict],
     symbol: str,
@@ -60,6 +64,17 @@ def _window_quality(
         if not _is_good(rows.get((symbol, close_time))):
             return False
     return True
+
+
+def _forward_fill_prices(values: np.ndarray) -> None:
+    for column_index in range(values.shape[1]):
+        last_price = np.nan
+        for row_index in range(values.shape[0]):
+            value = values[row_index, column_index]
+            if np.isfinite(value):
+                last_price = value
+            elif np.isfinite(last_price):
+                values[row_index, column_index] = last_price
 
 
 def prepare_daily_arrays(
@@ -93,15 +108,18 @@ def prepare_daily_arrays(
             h_row = hourly_rows.get((symbol, rebalance_time))
             h4_row = four_hour_rows.get((symbol, rebalance_time))
             d_row = daily_rows.get((symbol, rebalance_time))
-            if _is_good(h_row):
+            if _has_price(h_row):
                 close_1h[t_index, s_index] = float(h_row["close"])
+            if _is_good(h_row):
                 complete_1h[t_index, s_index] = True
-            if _is_good(h4_row):
+            if _has_price(h4_row):
                 close_4h[t_index, s_index] = float(h4_row["close"])
+            if _is_good(h4_row):
                 complete_4h[t_index, s_index] = True
-            if _is_good(d_row):
+            if _has_price(d_row):
                 close_1d[t_index, s_index] = float(d_row["close"])
                 quote_volume_1d[t_index, s_index] = float(d_row["quote_volume"])
+            if _is_good(d_row):
                 complete_1d[t_index, s_index] = True
             quality_1h_24h[t_index, s_index] = _window_quality(
                 hourly_rows,
@@ -124,6 +142,7 @@ def prepare_daily_arrays(
                 timedelta(days=1),
                 30,
             )
+    _forward_fill_prices(close_1d)
     return PreparedArrays(
         symbols=symbols,
         rebalance_times=np.array(rebalance_times, dtype=object),
