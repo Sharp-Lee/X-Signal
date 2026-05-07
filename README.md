@@ -81,6 +81,19 @@ Expected outputs:
 - `equity_curve.parquet`
 - `daily_positions.parquet`
 
+Run only a reserved production-test window after choosing parameters:
+
+```bash
+xsignal-momentum-v1 run \
+  --root data \
+  --offline \
+  --run-id final-production-test \
+  --top-n 10 \
+  --fee-bps 5 \
+  --slippage-bps 5 \
+  --start-date 2025-11-09
+```
+
 Scan a lightweight parameter grid without writing per-combination position files:
 
 ```bash
@@ -90,11 +103,13 @@ xsignal-momentum-v1 scan \
   --top-n 5,10,20 \
   --fee-bps 5 \
   --slippage-bps 2.5,5 \
-  --min-rolling-7d-quote-volume 0,10000000
+  --min-rolling-7d-quote-volume 0,10000000 \
+  --holdout-days 180
 ```
 
 The scan prepares canonical arrays once, reuses the prepared cache by default,
-and writes:
+excludes the most recent 180 days from parameter selection by default, and
+writes:
 
 ```text
 data/strategies/momentum_rotation_v1/scans/<scan_id>/

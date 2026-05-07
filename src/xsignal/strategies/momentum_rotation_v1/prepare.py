@@ -66,17 +66,6 @@ def _window_quality(
     return True
 
 
-def _forward_fill_prices(values: np.ndarray) -> None:
-    for column_index in range(values.shape[1]):
-        last_price = np.nan
-        for row_index in range(values.shape[0]):
-            value = values[row_index, column_index]
-            if np.isfinite(value):
-                last_price = value
-            elif np.isfinite(last_price):
-                values[row_index, column_index] = last_price
-
-
 def prepare_daily_arrays(
     *,
     bars_1h: CanonicalBarTable,
@@ -142,7 +131,6 @@ def prepare_daily_arrays(
                 timedelta(days=1),
                 30,
             )
-    _forward_fill_prices(close_1d)
     return PreparedArrays(
         symbols=symbols,
         rebalance_times=np.array(rebalance_times, dtype=object),

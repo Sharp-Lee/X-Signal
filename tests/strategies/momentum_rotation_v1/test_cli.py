@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import date
 
 import numpy as np
 
@@ -162,6 +163,67 @@ def test_cli_run_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch)
     assert calls[0][3] is False
 
 
+def test_cli_run_filters_rebalance_dates_before_signals_and_backtest(tmp_path, monkeypatch):
+    arrays = PreparedArrays(
+        symbols=("BTCUSDT",),
+        rebalance_times=np.array(["2026-01-01", "2026-01-02", "2026-01-03"], dtype=object),
+        close_1h=np.array([[100.0], [101.0], [102.0]]),
+        close_4h=np.array([[100.0], [101.0], [102.0]]),
+        close_1d=np.array([[100.0], [101.0], [102.0]]),
+        quote_volume_1d=np.ones((3, 1)),
+        complete_1h=np.ones((3, 1), dtype=bool),
+        complete_4h=np.ones((3, 1), dtype=bool),
+        complete_1d=np.ones((3, 1), dtype=bool),
+        quality_1h_24h=np.ones((3, 1), dtype=bool),
+        quality_4h_7d=np.ones((3, 1), dtype=bool),
+        quality_1d_30d=np.ones((3, 1), dtype=bool),
+    )
+    signals = SignalArrays(score=np.array([[1.0], [1.0]]), tradable_mask=np.ones((2, 1), dtype=bool))
+    signal_shapes = []
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.prepare_from_canonical",
+        lambda *_args, **_kwargs: (arrays, ["manifest.json"]),
+    )
+
+    def fake_signals(filtered, _config):
+        signal_shapes.append(filtered.close_1d.shape)
+        return signals
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.compute_momentum_signals",
+        fake_signals,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.run_backtest",
+        lambda *_args, **_kwargs: BacktestResult(
+            equity=np.array([1.0, 1.01]),
+            period_returns=np.array([0.01]),
+            weights=np.array([[1.0], [1.0]]),
+            turnover=np.array([1.0, 0.0]),
+            costs=np.array([0.0, 0.0]),
+        ),
+    )
+    monkeypatch.setattr("xsignal.strategies.momentum_rotation_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "run",
+            "--root",
+            str(tmp_path),
+            "--run-id",
+            "filtered-run",
+            "--start-date",
+            "2026-01-02",
+            "--end-date",
+            "2026-01-04",
+        ]
+    )
+
+    assert exit_code == 0
+    assert signal_shapes == [(2, 1)]
+
+
 def test_cli_scan_writes_summary_for_parameter_grid_with_single_prepare(tmp_path, monkeypatch):
     arrays = PreparedArrays(
         symbols=("BTCUSDT",),
@@ -231,6 +293,8 @@ def test_cli_scan_writes_summary_for_parameter_grid_with_single_prepare(tmp_path
             "1,2",
             "--min-rolling-7d-quote-volume",
             "0",
+            "--holdout-days",
+            "0",
         ]
     )
 
@@ -255,6 +319,87 @@ def test_cli_scan_writes_summary_for_parameter_grid_with_single_prepare(tmp_path
     assert manifest["git_commit"] == "abc123"
     assert manifest["canonical_manifests"] == ["manifest.json"]
     assert summary["combination_count"] == 4
+
+
+def test_cli_scan_defaults_to_research_split_and_records_holdout_metadata(tmp_path, monkeypatch):
+    arrays = PreparedArrays(
+        symbols=("BTCUSDT",),
+        rebalance_times=np.array(
+            [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3), date(2026, 1, 4)],
+            dtype=object,
+        ),
+        close_1h=np.array([[100.0], [101.0], [102.0], [103.0]]),
+        close_4h=np.array([[100.0], [101.0], [102.0], [103.0]]),
+        close_1d=np.array([[100.0], [101.0], [102.0], [103.0]]),
+        quote_volume_1d=np.ones((4, 1)),
+        complete_1h=np.ones((4, 1), dtype=bool),
+        complete_4h=np.ones((4, 1), dtype=bool),
+        complete_1d=np.ones((4, 1), dtype=bool),
+        quality_1h_24h=np.ones((4, 1), dtype=bool),
+        quality_4h_7d=np.ones((4, 1), dtype=bool),
+        quality_1d_30d=np.ones((4, 1), dtype=bool),
+    )
+    signals = SignalArrays(score=np.array([[1.0], [1.0]]), tradable_mask=np.ones((2, 1), dtype=bool))
+    signal_shapes = []
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.prepare_from_canonical",
+        lambda *_args, **_kwargs: (arrays, ["manifest.json"]),
+    )
+
+    def fake_signals(filtered, _config):
+        signal_shapes.append(filtered.close_1d.shape)
+        return signals
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.compute_momentum_signals",
+        fake_signals,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.run_backtest",
+        lambda *_args, **_kwargs: BacktestResult(
+            equity=np.array([1.0, 1.01]),
+            period_returns=np.array([0.01]),
+            weights=np.array([[1.0], [1.0]]),
+            turnover=np.array([1.0, 0.0]),
+            costs=np.array([0.0, 0.0]),
+        ),
+    )
+    monkeypatch.setattr("xsignal.strategies.momentum_rotation_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "scan",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "holdout-scan",
+            "--top-n",
+            "1",
+            "--holdout-days",
+            "1",
+        ]
+    )
+
+    manifest_path = (
+        tmp_path
+        / "strategies"
+        / "momentum_rotation_v1"
+        / "scans"
+        / "holdout-scan"
+        / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    assert exit_code == 0
+    assert signal_shapes == [(2, 1)]
+    assert manifest["data_split"] == {
+        "holdout_days": 1,
+        "research_start": "2026-01-01T00:00:00Z",
+        "research_end": "2026-01-02T00:00:00Z",
+        "holdout_start": "2026-01-03T00:00:00Z",
+        "holdout_end": "2026-01-04T00:00:00Z",
+    }
 
 
 def test_cli_scan_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch):
@@ -309,6 +454,8 @@ def test_cli_scan_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch
             "--top-n",
             "1",
             "--no-cache",
+            "--holdout-days",
+            "0",
         ]
     )
 
@@ -350,7 +497,7 @@ def test_cli_prepare_from_canonical_uses_prepared_cache(tmp_path, monkeypatch):
         json.dumps(
             {
                 "cache_key": "cached-key",
-                "cache_version": "momentum-rotation-prepared-v2",
+                "cache_version": "momentum-rotation-prepared-v3",
                 "canonical_manifests": [str(manifest_path)],
             }
         )
