@@ -16,6 +16,8 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
     build_regime_walk_forward_fold_row,
+    build_regime_stability_summary,
+    select_stable_regime_filters,
     write_trailing_regime_walk_forward_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_walk_forward import (
@@ -50,6 +52,13 @@ def test_build_regime_walk_forward_fold_row_records_train_threshold_and_validati
             "max_drawdown": 0.01,
             "filtered_signal_count": 30,
             "base_signal_count": 60,
+            "selection_method": "train_stability",
+            "stability_split_count": 3,
+            "stability_min_trades": 5,
+            "stability_eligible_split_count": 3,
+            "stability_positive_split_count": 2,
+            "stability_mean_score": 0.0123456789012,
+            "stability_min_score": -0.003,
         },
         validation_row={
             "score": -0.02,
@@ -76,9 +85,81 @@ def test_build_regime_walk_forward_fold_row_records_train_threshold_and_validati
     assert row["threshold_source"] == "train_fold_signal_distribution"
     assert row["train_score"] == 0.04
     assert row["train_signal_keep_rate"] == 0.5
+    assert row["selection_method"] == "train_stability"
+    assert row["train_stability_split_count"] == 3
+    assert row["train_stability_min_trades"] == 5
+    assert row["train_stability_eligible_split_count"] == 3
+    assert row["train_stability_positive_split_count"] == 2
+    assert row["train_stability_mean_score"] == 0.012345678901
+    assert row["train_stability_min_score"] == -0.003
     assert row["validation_score"] == -0.02
     assert row["validation_signal_keep_rate"] == 0.5
     assert row["min_move_unit"] == 1.2
+
+
+def test_build_regime_stability_summary_counts_eligible_and_positive_segments():
+    summary = build_regime_stability_summary(
+        [
+            {"trade_count": 8, "score": 0.03},
+            {"trade_count": 7, "score": -0.01},
+            {"trade_count": 2, "score": 0.50},
+        ],
+        split_count=3,
+        min_trades=5,
+    )
+
+    assert summary == {
+        "selection_method": "train_stability",
+        "stability_split_count": 3,
+        "stability_min_trades": 5,
+        "stability_evaluated_split_count": 3,
+        "stability_eligible_split_count": 2,
+        "stability_positive_split_count": 1,
+        "stability_mean_score": 0.01,
+        "stability_min_score": -0.01,
+    }
+
+
+def test_select_stable_regime_filters_prefers_consistency_over_raw_train_score():
+    rows = [
+        {
+            "rule_id": "high_train_unstable",
+            "trade_count": 100,
+            "score": 0.50,
+            "stability_split_count": 3,
+            "stability_eligible_split_count": 3,
+            "stability_positive_split_count": 1,
+            "stability_mean_score": 0.08,
+            "stability_min_score": -0.20,
+        },
+        {
+            "rule_id": "lower_train_stable",
+            "trade_count": 80,
+            "score": 0.20,
+            "stability_split_count": 3,
+            "stability_eligible_split_count": 3,
+            "stability_positive_split_count": 3,
+            "stability_mean_score": 0.04,
+            "stability_min_score": 0.02,
+        },
+        {
+            "rule_id": "unfiltered",
+            "trade_count": 500,
+            "score": 1.0,
+            "stability_split_count": 3,
+            "stability_eligible_split_count": 3,
+            "stability_positive_split_count": 3,
+            "stability_mean_score": 1.0,
+            "stability_min_score": 1.0,
+        },
+    ]
+
+    assert select_stable_regime_filters(
+        rows,
+        top_k=1,
+        min_trades=10,
+        stability_min_positive_splits=2,
+    ) == [rows[1]]
 
 
 def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
@@ -130,6 +211,9 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
         test_days=90,
         step_days=90,
         min_trades=50,
+        stability_splits=3,
+        stability_min_trades=10,
+        stability_min_positive_splits=2,
         quantiles=(0.8,),
         feature_names=("market_lookback_return",),
     )
@@ -139,6 +223,10 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
     assert manifest["run_type"] == "trailing_stop_research_regime_walk_forward"
     assert manifest["data_scope"] == "research_only"
     assert manifest["threshold_scope"] == "per_fold_train_signal_distribution"
+    assert manifest["selection_method"] == "train_stability"
+    assert manifest["stability_splits"] == 3
+    assert manifest["stability_min_trades"] == 10
+    assert manifest["stability_min_positive_splits"] == 2
     assert set(manifest["outputs"]) == {
         "fold_summary",
         "fold_summary_csv",

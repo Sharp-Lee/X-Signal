@@ -75,6 +75,8 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
     build_regime_walk_forward_fold_row,
+    build_regime_stability_summary,
+    select_stable_regime_filters,
     write_trailing_regime_walk_forward_artifacts,
 )
 
@@ -755,12 +757,45 @@ def _slice_regime_values(
     return {name: values[indexer] for name, values in values_by_feature.items()}
 
 
+def _stability_segments(row_count: int, split_count: int) -> list[tuple[int, ...]]:
+    if split_count <= 1:
+        return []
+    indices = np.arange(row_count, dtype=np.int64)
+    return [
+        tuple(int(index) for index in segment)
+        for segment in np.array_split(indices, split_count)
+        if segment.size
+    ]
+
+
+def _stability_min_trades(args: argparse.Namespace) -> int:
+    if args.stability_min_trades > 0:
+        return args.stability_min_trades
+    if args.stability_splits <= 1:
+        return 0
+    return max(1, args.min_trades // args.stability_splits)
+
+
+def _stability_min_positive_splits(args: argparse.Namespace) -> int:
+    if args.stability_min_positive_splits > 0:
+        return args.stability_min_positive_splits
+    if args.stability_splits <= 1:
+        return 0
+    return max(1, (args.stability_splits + 1) // 2)
+
+
 def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     if args.atr_multiplier != 2.0:
         raise ValueError(
             "atr_multiplier must stay fixed at 2.0 for research trail-regime-walk-forward"
         )
+    if args.stability_splits <= 0:
+        raise ValueError("stability_splits must be positive")
+    if args.stability_min_trades < 0:
+        raise ValueError("stability_min_trades must be non-negative")
+    if args.stability_min_positive_splits < 0:
+        raise ValueError("stability_min_positive_splits must be non-negative")
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -802,10 +837,13 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     fold_rows = []
     selection_rows = []
     selected_train_rows = []
+    stability_min_trades = _stability_min_trades(args)
+    stability_min_positive_splits = _stability_min_positive_splits(args)
     for fold_index, fold in enumerate(folds):
         train_arrays = slice_ohlcv_arrays(research_arrays, fold.train_indices)
         train_features = slice_feature_arrays(features, fold.train_indices)
         train_values = _slice_regime_values(values_by_feature, fold.train_indices)
+        stability_segments = _stability_segments(train_arrays.open.shape[0], args.stability_splits)
         train_rules = build_regime_filter_rules(
             train_features.signal,
             train_values,
@@ -849,13 +887,63 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                     "is_selected": False,
                 }
             )
+            if stability_segments:
+                segment_rows = []
+                for segment_index, segment_indices in enumerate(stability_segments):
+                    segment_arrays = slice_ohlcv_arrays(train_arrays, segment_indices)
+                    segment_features = slice_feature_arrays(train_features, segment_indices)
+                    segment_values = _slice_regime_values(train_values, segment_indices)
+                    filtered_segment_signal = apply_regime_filter_rule(
+                        segment_features.signal,
+                        segment_values,
+                        rule,
+                    )
+                    segment_result = simulate_trailing_stop(
+                        segment_arrays,
+                        replace(segment_features, signal=filtered_segment_signal),
+                        config,
+                        atr_multiplier=args.atr_multiplier,
+                    )
+                    segment_row = build_regime_scan_row(
+                        regime_scan_id=regime_walk_forward_id,
+                        config=config,
+                        result=segment_result,
+                        symbols=segment_arrays.symbols,
+                        rule=rule,
+                        base_signal_count=int(segment_features.signal.sum()),
+                        filtered_signal_count=int(filtered_segment_signal.sum()),
+                        atr_multiplier=args.atr_multiplier,
+                    )
+                    segment_row.update(
+                        {
+                            "regime_walk_forward_id": regime_walk_forward_id,
+                            "fold_index": fold_index,
+                            "stability_segment_index": segment_index,
+                        }
+                    )
+                    segment_rows.append(segment_row)
+                row.update(
+                    build_regime_stability_summary(
+                        segment_rows,
+                        split_count=args.stability_splits,
+                        min_trades=stability_min_trades,
+                    )
+                )
             train_rows.append(row)
 
-        selected = select_top_regime_filters(
-            train_rows,
-            top_k=1,
-            min_trades=args.min_trades,
-        )
+        if args.stability_splits > 1:
+            selected = select_stable_regime_filters(
+                train_rows,
+                top_k=1,
+                min_trades=args.min_trades,
+                stability_min_positive_splits=stability_min_positive_splits,
+            )
+        else:
+            selected = select_top_regime_filters(
+                train_rows,
+                top_k=1,
+                min_trades=args.min_trades,
+            )
         selected_train_row = selected[0] if selected else None
         selected_rule = None
         validation_row = None
@@ -901,11 +989,19 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
             )
         )
 
-    top_filters = select_top_regime_filters(
-        selected_train_rows,
-        top_k=args.top_k,
-        min_trades=args.min_trades,
-    )
+    if args.stability_splits > 1:
+        top_filters = select_stable_regime_filters(
+            selected_train_rows,
+            top_k=args.top_k,
+            min_trades=args.min_trades,
+            stability_min_positive_splits=stability_min_positive_splits,
+        )
+    else:
+        top_filters = select_top_regime_filters(
+            selected_train_rows,
+            top_k=args.top_k,
+            min_trades=args.min_trades,
+        )
     runtime_seconds = time.perf_counter() - started
     output = write_trailing_regime_walk_forward_artifacts(
         paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
@@ -925,6 +1021,9 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         test_days=args.test_days,
         step_days=args.step_days,
         min_trades=args.min_trades,
+        stability_splits=args.stability_splits,
+        stability_min_trades=stability_min_trades,
+        stability_min_positive_splits=stability_min_positive_splits,
         quantiles=args.quantile,
         feature_names=args.feature_name,
     )
@@ -1126,6 +1225,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     trail_regime_walk_forward_parser.add_argument("--top-k", type=int, default=20)
     trail_regime_walk_forward_parser.add_argument("--min-trades", type=int, default=200)
+    trail_regime_walk_forward_parser.add_argument("--stability-splits", type=int, default=1)
+    trail_regime_walk_forward_parser.add_argument("--stability-min-trades", type=int, default=0)
+    trail_regime_walk_forward_parser.add_argument(
+        "--stability-min-positive-splits",
+        type=int,
+        default=0,
+    )
     trail_regime_walk_forward_parser.set_defaults(func=_trail_regime_walk_forward_command)
 
     args = parser.parse_args(argv)
