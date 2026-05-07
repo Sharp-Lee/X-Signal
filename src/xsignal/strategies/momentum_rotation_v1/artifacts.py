@@ -34,6 +34,9 @@ def build_backtest_summary(result: BacktestResult) -> dict[str, float | int]:
         if result.period_returns.size
         else 0.0,
         "total_cost": float(result.costs.sum()),
+        "terminal_liquidation_cost": float(result.terminal_liquidation_cost),
+        "missing_weighted_return_count": int(result.missing_weighted_return_count),
+        "missing_weighted_return_weight": float(result.missing_weighted_return_weight),
     }
 
 
@@ -105,6 +108,7 @@ def write_scan_artifacts(
     git_commit: str,
     runtime_seconds: float,
     symbol_count: int,
+    data_split: dict[str, Any] | None = None,
 ) -> Path:
     scan_dir = paths.scan_dir(scan_id)
     scan_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +134,8 @@ def write_scan_artifacts(
             "summary_csv": str(scan_dir / "summary.csv"),
         },
     }
+    if data_split is not None:
+        manifest["data_split"] = data_split
     _write_json(scan_dir / "manifest.json", manifest)
     _write_json(scan_dir / "summary.json", summary)
     fieldnames = [
@@ -145,6 +151,9 @@ def write_scan_artifacts(
         "period_count",
         "mean_period_return",
         "total_cost",
+        "terminal_liquidation_cost",
+        "missing_weighted_return_count",
+        "missing_weighted_return_weight",
     ]
     with (scan_dir / "summary.csv").open("w", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")

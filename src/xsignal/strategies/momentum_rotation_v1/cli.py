@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 import uuid
+from datetime import date
 from pathlib import Path
 
 from xsignal.strategies.momentum_rotation_v1.artifacts import (
@@ -28,9 +29,13 @@ from xsignal.strategies.momentum_rotation_v1.prepare import (
     save_prepared_arrays,
 )
 from xsignal.strategies.momentum_rotation_v1.signals import compute_momentum_signals
+from xsignal.strategies.momentum_rotation_v1.splits import (
+    filter_by_rebalance_date,
+    split_research_and_holdout,
+)
 
 
-PREPARED_CACHE_VERSION = "momentum-rotation-prepared-v2"
+PREPARED_CACHE_VERSION = "momentum-rotation-prepared-v3"
 
 
 def _git_commit() -> str:
@@ -167,6 +172,13 @@ def _parse_float_grid(value: str) -> tuple[float, ...]:
     return _parse_csv_values(value, float, "grid")
 
 
+def _parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD") from exc
+
+
 def _run_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     config = MomentumRotationConfig(
@@ -174,12 +186,19 @@ def _run_command(args: argparse.Namespace) -> Path:
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
         min_rolling_7d_quote_volume=args.min_rolling_7d_quote_volume,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
     arrays, canonical_manifests = prepare_from_canonical(
         Path(args.root),
         config,
         offline=args.offline,
         use_cache=not args.no_cache,
+    )
+    arrays = filter_by_rebalance_date(
+        arrays,
+        start_date=config.start_date,
+        end_date=config.end_date,
     )
     signals = compute_momentum_signals(arrays, config)
     result = run_backtest(arrays, signals, config)
@@ -242,6 +261,10 @@ def _scan_command(args: argparse.Namespace) -> Path:
         offline=args.offline,
         use_cache=not args.no_cache,
     )
+    arrays, _holdout, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
     scan_id = args.scan_id or uuid.uuid4().hex
     rows = []
     signal_cache = {}
@@ -272,6 +295,7 @@ def _scan_command(args: argparse.Namespace) -> Path:
         git_commit=_git_commit(),
         runtime_seconds=runtime_seconds,
         symbol_count=len(arrays.symbols),
+        data_split=data_split,
     )
     print(output)
     return output
@@ -287,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--fee-bps", type=float, default=5.0)
     run_parser.add_argument("--slippage-bps", type=float, default=5.0)
     run_parser.add_argument("--min-rolling-7d-quote-volume", type=float, default=0.0)
+    run_parser.add_argument("--start-date", type=_parse_date)
+    run_parser.add_argument("--end-date", type=_parse_date)
     run_parser.add_argument(
         "--offline",
         action="store_true",
@@ -309,6 +335,12 @@ def main(argv: list[str] | None = None) -> int:
         "--min-rolling-7d-quote-volume",
         type=_parse_float_grid,
         default=(0.0,),
+    )
+    scan_parser.add_argument(
+        "--holdout-days",
+        type=int,
+        default=180,
+        help="Reserve the most recent N days from parameter scans for final production testing",
     )
     scan_parser.add_argument(
         "--offline",

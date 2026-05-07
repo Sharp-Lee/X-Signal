@@ -75,9 +75,62 @@ def test_run_backtest_uses_weights_on_next_period_returns():
     )
 
     assert result.weights.shape == (3, 3)
-    assert result.weights[0].tolist() == [1.0, 0.0, 0.0]
-    assert result.period_returns.tolist() == pytest.approx([0.1, -0.1])
-    assert result.equity.tolist() == pytest.approx([1.0, 1.1, 0.99])
+    assert result.weights.tolist() == [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+    ]
+    assert result.period_returns.tolist() == pytest.approx([0.0, 0.1])
+    assert result.equity.tolist() == pytest.approx([1.0, 1.0, 1.1])
+
+
+def test_run_backtest_defaults_to_next_close_execution_to_avoid_same_close_fill():
+    close = np.array([[100.0], [200.0], [100.0], [150.0]])
+    prepared = PreparedArrays(
+        symbols=("BTCUSDT",),
+        rebalance_times=np.array([0, 1, 2, 3], dtype=object),
+        close_1h=close,
+        close_4h=close,
+        close_1d=close,
+        quote_volume_1d=np.ones_like(close),
+        complete_1h=np.ones_like(close, dtype=bool),
+        complete_4h=np.ones_like(close, dtype=bool),
+        complete_1d=np.ones_like(close, dtype=bool),
+        quality_1h_24h=np.ones_like(close, dtype=bool),
+        quality_4h_7d=np.ones_like(close, dtype=bool),
+        quality_1d_30d=np.ones_like(close, dtype=bool),
+    )
+    signal = SignalArrays(
+        score=np.array([[1.0], [1.0], [np.nan], [np.nan]]),
+        tradable_mask=np.array([[True], [True], [False], [False]]),
+    )
+
+    result = run_backtest(
+        prepared,
+        signal,
+        MomentumRotationConfig(top_n=1, fee_bps=0, slippage_bps=0),
+    )
+
+    assert result.weights[:, 0].tolist() == [0.0, 1.0, 1.0, 0.0]
+    assert result.period_returns.tolist() == pytest.approx([0.0, -0.5, 0.5])
+    assert result.equity.tolist() == pytest.approx([1.0, 1.0, 0.5, 0.75])
+
+
+def test_run_backtest_charges_terminal_liquidation_cost_by_default():
+    signal = SignalArrays(
+        score=np.array([[3.0, 2.0, 1.0], [1.0, 3.0, 2.0], [1.0, 2.0, 3.0]]),
+        tradable_mask=np.ones((3, 3), dtype=bool),
+    )
+
+    result = run_backtest(
+        arrays(),
+        signal,
+        MomentumRotationConfig(top_n=1, fee_bps=10, slippage_bps=0),
+    )
+
+    assert result.turnover.tolist() == [0.0, 1.0, 1.0]
+    assert result.costs.tolist() == pytest.approx([0.0, 0.001, 0.001])
+    assert result.terminal_liquidation_cost == pytest.approx(0.001)
 
 
 def test_run_backtest_ignores_nan_returns_for_unweighted_symbols():
@@ -92,8 +145,27 @@ def test_run_backtest_ignores_nan_returns_for_unweighted_symbols():
         MomentumRotationConfig(top_n=1, fee_bps=0, slippage_bps=0),
     )
 
-    assert result.period_returns.tolist() == pytest.approx([0.1, 0.1])
-    assert result.equity.tolist() == pytest.approx([1.0, 1.1, 1.21])
+    assert result.period_returns.tolist() == pytest.approx([0.0, 0.1])
+    assert result.equity.tolist() == pytest.approx([1.0, 1.0, 1.1])
+
+
+def test_run_backtest_flattens_and_reports_missing_weighted_symbol_return():
+    signal = SignalArrays(
+        score=np.array([[1.0, np.nan], [1.0, np.nan], [1.0, np.nan]]),
+        tradable_mask=np.array([[True, False], [True, False], [True, False]]),
+    )
+    prepared = arrays_with_unweighted_nan_returns()
+    prepared.close_1d[2, 0] = np.nan
+
+    result = run_backtest(
+        prepared,
+        signal,
+        MomentumRotationConfig(top_n=1, fee_bps=0, slippage_bps=0),
+    )
+
+    assert result.period_returns.tolist() == pytest.approx([0.0, 0.0])
+    assert result.missing_weighted_return_count == 1
+    assert result.missing_weighted_return_weight == pytest.approx(1.0)
 
 
 def test_run_backtest_applies_turnover_costs():
@@ -107,8 +179,8 @@ def test_run_backtest_applies_turnover_costs():
         MomentumRotationConfig(top_n=1, fee_bps=10, slippage_bps=0),
     )
 
-    assert result.turnover.tolist() == [1.0, 2.0, 2.0]
-    assert result.costs[0] == 0.001
+    assert result.turnover.tolist() == [0.0, 1.0, 1.0]
+    assert result.costs[1] == 0.001
 
 
 def test_run_backtest_fails_when_no_symbols_are_eligible():

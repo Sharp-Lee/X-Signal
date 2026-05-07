@@ -124,7 +124,7 @@ def test_prepare_daily_arrays_preserves_incomplete_daily_price_for_pnl():
     assert not prepared.quality_1d_30d[1, 0]
 
 
-def test_prepare_daily_arrays_forward_fills_missing_daily_price_for_pnl_only():
+def test_prepare_daily_arrays_leaves_missing_daily_price_as_nan_for_pnl():
     day0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     daily_rows = rows(["BTCUSDT"], [day0], 30.0, 1440)
     daily_rows.extend(rows(["ETHUSDT"], [day0, day0 + timedelta(days=1)], 50.0, 1440))
@@ -139,7 +139,7 @@ def test_prepare_daily_arrays_forward_fills_missing_daily_price_for_pnl_only():
 
     btc_index = prepared.symbols.index("BTCUSDT")
     assert prepared.rebalance_times.tolist() == [day0 + timedelta(days=1), day0 + timedelta(days=2)]
-    assert prepared.close_1d[1, btc_index] == 30.0
+    assert np.isnan(prepared.close_1d[1, btc_index])
     assert not prepared.complete_1d[1, btc_index]
     assert not prepared.quality_1d_30d[1, btc_index]
 
