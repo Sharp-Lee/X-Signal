@@ -74,6 +74,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     write_trailing_regime_scan_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
+    build_regime_validation_trade_rows,
     build_regime_walk_forward_fold_row,
     build_regime_stability_summary,
     select_stable_regime_filters,
@@ -757,6 +758,43 @@ def _slice_regime_values(
     return {name: values[indexer] for name, values in values_by_feature.items()}
 
 
+def _time_lookup_key(value: object) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _nullable_float(value: object) -> float | None:
+    parsed = float(value)
+    return parsed if np.isfinite(parsed) else None
+
+
+def _trade_regime_feature_rows(
+    trades: list[dict[str, object]],
+    arrays,
+    values_by_feature: dict[str, np.ndarray],
+    feature_names: tuple[str, ...],
+) -> list[dict[str, float | None]]:
+    time_index = {
+        _time_lookup_key(open_time): index
+        for index, open_time in enumerate(arrays.open_times)
+    }
+    symbol_index = {symbol: index for index, symbol in enumerate(arrays.symbols)}
+    rows = []
+    for trade in trades:
+        t_index = time_index.get(str(trade.get("signal_open_time")))
+        s_index = symbol_index.get(str(trade.get("symbol")))
+        feature_row = {}
+        for feature_name in feature_names:
+            values = values_by_feature.get(feature_name)
+            if values is None or t_index is None or s_index is None:
+                feature_row[feature_name] = None
+            else:
+                feature_row[feature_name] = _nullable_float(values[t_index, s_index])
+        rows.append(feature_row)
+    return rows
+
+
 def _stability_segments(row_count: int, split_count: int) -> list[tuple[int, ...]]:
     if split_count <= 1:
         return []
@@ -836,6 +874,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     regime_walk_forward_id = args.regime_walk_forward_id or uuid.uuid4().hex
     fold_rows = []
     selection_rows = []
+    validation_trade_rows = []
     selected_train_rows = []
     stability_min_trades = _stability_min_trades(args)
     stability_min_positive_splits = _stability_min_positive_splits(args)
@@ -975,6 +1014,23 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 filtered_signal_count=int(filtered_validation_signal.sum()),
                 atr_multiplier=args.atr_multiplier,
             )
+            validation_trade_rows.extend(
+                build_regime_validation_trade_rows(
+                    regime_walk_forward_id=regime_walk_forward_id,
+                    fold_index=fold_index,
+                    fold=fold,
+                    selected_train_row=selected_train_row,
+                    validation_row=validation_row,
+                    selected_rule=selected_rule,
+                    trades=validation_result.trades,
+                    trade_feature_rows=_trade_regime_feature_rows(
+                        validation_result.trades,
+                        validation_arrays,
+                        validation_values,
+                        args.feature_name,
+                    ),
+                )
+            )
 
         selection_rows.extend(train_rows)
         fold_rows.append(
@@ -1009,6 +1065,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         config=config,
         fold_rows=fold_rows,
         selection_rows=selection_rows,
+        validation_trade_rows=validation_trade_rows,
         top_filters=top_filters,
         canonical_manifests=[str(path) for path in manifests],
         git_commit=_git_commit(),

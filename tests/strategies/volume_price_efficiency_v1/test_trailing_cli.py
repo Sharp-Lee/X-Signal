@@ -763,16 +763,18 @@ def test_cli_trail_regime_walk_forward_uses_train_fold_thresholds(
         from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
 
         final_equity = 1.0 + signal_count / 100.0
+        signal_indices = [int(index) for index in np.flatnonzero(features.signal[:, 0])]
         return TrailingStopResult(
             trades=[
                 {
                     "symbol": "BTCUSDT",
+                    "signal_open_time": sim_arrays.open_times[index].isoformat(),
                     "realized_return": 0.04,
                     "net_realized_return": 0.038,
                     "holding_bars": 2,
                     "ignored_signal_count": 0,
                 }
-                for _ in range(signal_count)
+                for index in signal_indices
             ],
             equity=np.array([1.0, final_equity], dtype=np.float64),
             period_returns=np.array([final_equity - 1.0], dtype=np.float64),
@@ -835,6 +837,7 @@ def test_cli_trail_regime_walk_forward_uses_train_fold_thresholds(
     manifest = json.loads((output_dir / "manifest.json").read_text())
     fold_rows = pq.read_table(output_dir / "fold_summary.parquet").to_pylist()
     selection_rows = pq.read_table(output_dir / "selection_summary.parquet").to_pylist()
+    validation_trades = pq.read_table(output_dir / "validation_trades.parquet").to_pylist()
     assert exit_code == 0
     assert captured["split"] == [(all_arrays, 7)]
     assert captured["simulate_signal_counts"] == [2, 2, 4]
@@ -846,6 +849,12 @@ def test_cli_trail_regime_walk_forward_uses_train_fold_thresholds(
     assert fold_rows[0]["threshold"] == 3.5
     assert fold_rows[0]["validation_filtered_signal_count"] == 4
     assert {row["threshold"] for row in selection_rows} == {3.5}
+    assert len(validation_trades) == 4
+    assert validation_trades[0]["fold_index"] == 0
+    assert validation_trades[0]["rule_id"] == "move_unit_gte_p50"
+    assert validation_trades[0]["threshold_source"] == "train_fold_signal_distribution"
+    assert validation_trades[0]["move_unit"] == 4.0
+    assert manifest["outputs"]["validation_trades"].endswith("validation_trades.parquet")
 
 
 def test_cli_trail_regime_walk_forward_can_select_by_train_stability(

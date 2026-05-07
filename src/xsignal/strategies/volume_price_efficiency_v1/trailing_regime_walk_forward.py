@@ -50,6 +50,12 @@ def _score_or_none(row: dict[str, Any]) -> float | None:
     return None if value is None else float(value)
 
 
+def _signal_keep_rate(row: dict[str, Any]) -> float | None:
+    if row.get("signal_keep_rate") is not None:
+        return float(row["signal_keep_rate"])
+    return _safe_keep_rate(row)
+
+
 def _rows_table(rows: list[dict[str, Any]]) -> pa.Table:
     if rows:
         return pa.Table.from_pylist(rows)
@@ -138,6 +144,44 @@ def select_stable_regime_filters(
     )[:top_k]
 
 
+def build_regime_validation_trade_rows(
+    *,
+    regime_walk_forward_id: str,
+    fold_index: int,
+    fold: WalkForwardFold,
+    selected_train_row: dict[str, Any],
+    validation_row: dict[str, Any],
+    selected_rule: RegimeFilterRule,
+    trades: list[dict[str, Any]],
+    trade_feature_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for trade_index, trade in enumerate(trades):
+        row = {
+            "regime_walk_forward_id": regime_walk_forward_id,
+            "fold_index": fold_index,
+            "test_start": _json_safe(fold.test_start),
+            "test_end": _json_safe(fold.test_end),
+            "rule_id": selected_rule.rule_id,
+            "feature_name": selected_rule.feature_name,
+            "direction": selected_rule.direction,
+            "quantile": selected_rule.quantile,
+            "threshold": _rounded(selected_rule.threshold),
+            "threshold_source": "train_fold_signal_distribution",
+            "train_score": _rounded(selected_train_row.get("score")),
+            "train_trade_count": selected_train_row.get("trade_count"),
+            "train_signal_keep_rate": _rounded(_signal_keep_rate(selected_train_row)),
+            "validation_score": _rounded(validation_row.get("score")),
+            "validation_trade_count": validation_row.get("trade_count"),
+            "validation_signal_keep_rate": _rounded(_signal_keep_rate(validation_row)),
+        }
+        row.update(trade)
+        if trade_index < len(trade_feature_rows):
+            row.update(trade_feature_rows[trade_index])
+        rows.append(row)
+    return rows
+
+
 def build_regime_walk_forward_fold_row(
     *,
     regime_walk_forward_id: str,
@@ -215,6 +259,7 @@ def write_trailing_regime_walk_forward_artifacts(
     config: VolumePriceEfficiencyConfig,
     fold_rows: list[dict[str, Any]],
     selection_rows: list[dict[str, Any]],
+    validation_trade_rows: list[dict[str, Any]],
     top_filters: list[dict[str, Any]],
     canonical_manifests: list[str],
     git_commit: str,
@@ -267,6 +312,8 @@ def write_trailing_regime_walk_forward_artifacts(
             "fold_summary": str(output_dir / "fold_summary.parquet"),
             "fold_summary_csv": str(output_dir / "fold_summary.csv"),
             "selection_summary": str(output_dir / "selection_summary.parquet"),
+            "validation_trades": str(output_dir / "validation_trades.parquet"),
+            "validation_trades_csv": str(output_dir / "validation_trades.csv"),
             "top_filters": str(output_dir / "top_filters.json"),
         },
     }
@@ -274,5 +321,7 @@ def write_trailing_regime_walk_forward_artifacts(
     _write_json(output_dir / "top_filters.json", top_filters)
     pq.write_table(_rows_table(fold_rows), output_dir / "fold_summary.parquet")
     pq.write_table(_rows_table(selection_rows), output_dir / "selection_summary.parquet")
+    pq.write_table(_rows_table(validation_trade_rows), output_dir / "validation_trades.parquet")
     _write_csv(output_dir / "fold_summary.csv", fold_rows)
+    _write_csv(output_dir / "validation_trades.csv", validation_trade_rows)
     return output_dir
