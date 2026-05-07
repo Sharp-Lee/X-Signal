@@ -463,6 +463,99 @@ def test_cli_scan_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch
     assert calls[0][3] is False
 
 
+def test_cli_select_writes_selection_and_holdout_run_command(tmp_path):
+    scan_dir = tmp_path / "strategies" / "momentum_rotation_v1" / "scans" / "scan123"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "scan_id": "scan123",
+                "data_split": {
+                    "holdout_days": 180,
+                    "research_start": "2020-01-02T00:00:00Z",
+                    "research_end": "2025-11-08T00:00:00Z",
+                    "holdout_start": "2025-11-09T00:00:00Z",
+                    "holdout_end": "2026-05-08T00:00:00Z",
+                },
+            }
+        )
+    )
+    with (scan_dir / "summary.csv").open("w", newline="") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "scan_id",
+                "config_hash",
+                "top_n",
+                "fee_bps",
+                "slippage_bps",
+                "min_rolling_7d_quote_volume",
+                "final_equity",
+                "total_return",
+                "max_drawdown",
+                "missing_weighted_return_count",
+                "missing_weighted_return_weight",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "scan_id": "scan123",
+                    "config_hash": "high-return-high-risk",
+                    "top_n": 5,
+                    "fee_bps": 5,
+                    "slippage_bps": 5,
+                    "min_rolling_7d_quote_volume": 0,
+                    "final_equity": 3.0,
+                    "total_return": 2.0,
+                    "max_drawdown": 0.9,
+                    "missing_weighted_return_count": 0,
+                    "missing_weighted_return_weight": 0.0,
+                },
+                {
+                    "scan_id": "scan123",
+                    "config_hash": "balanced",
+                    "top_n": 10,
+                    "fee_bps": 5,
+                    "slippage_bps": 5,
+                    "min_rolling_7d_quote_volume": 1000,
+                    "final_equity": 2.0,
+                    "total_return": 1.0,
+                    "max_drawdown": 0.1,
+                    "missing_weighted_return_count": 0,
+                    "missing_weighted_return_weight": 0.0,
+                },
+            ]
+        )
+
+    exit_code = main(
+        [
+            "select",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "scan123",
+            "--selection-id",
+            "pick1",
+            "--drawdown-penalty",
+            "2.0",
+        ]
+    )
+
+    selection_path = scan_dir / "selections" / "pick1.json"
+    selection = json.loads(selection_path.read_text())
+
+    assert exit_code == 0
+    assert selection["selected"]["config_hash"] == "balanced"
+    assert selection["selected"]["score"] == 0.8
+    assert selection["holdout_run_command"] == (
+        "xsignal-momentum-v1 run --root data --offline --run-id pick1-holdout "
+        "--top-n 10 --fee-bps 5.0 --slippage-bps 5.0 "
+        "--min-rolling-7d-quote-volume 1000.0 --start-date 2025-11-09"
+    )
+
+
 def test_cli_prepare_from_canonical_uses_prepared_cache(tmp_path, monkeypatch):
     from xsignal.strategies.momentum_rotation_v1.cli import prepare_from_canonical
     from xsignal.strategies.momentum_rotation_v1.config import MomentumRotationConfig

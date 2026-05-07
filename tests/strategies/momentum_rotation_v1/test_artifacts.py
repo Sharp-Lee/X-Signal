@@ -70,6 +70,20 @@ def test_build_backtest_summary_handles_empty_period_returns():
     assert summary["total_cost"] == pytest.approx(0.001)
 
 
+def test_build_backtest_summary_includes_max_drawdown():
+    result = BacktestResult(
+        equity=np.array([1.0, 1.2, 0.9, 1.1]),
+        period_returns=np.array([0.2, -0.25, 2 / 9]),
+        weights=np.ones((4, 1)),
+        turnover=np.zeros(4),
+        costs=np.zeros(4),
+    )
+
+    summary = build_backtest_summary(result)
+
+    assert summary["max_drawdown"] == pytest.approx(0.25)
+
+
 def test_write_scan_artifacts_creates_manifest_json_and_csv(tmp_path):
     paths = MomentumRotationPaths(root=tmp_path)
     rows = [
@@ -85,6 +99,7 @@ def test_write_scan_artifacts_creates_manifest_json_and_csv(tmp_path):
             "total_return": 0.01,
             "period_count": 1,
             "mean_period_return": 0.01,
+            "max_drawdown": 0.0,
             "total_cost": 0.001,
         },
         {
@@ -99,6 +114,7 @@ def test_write_scan_artifacts_creates_manifest_json_and_csv(tmp_path):
             "total_return": 0.02,
             "period_count": 1,
             "mean_period_return": 0.02,
+            "max_drawdown": 0.0,
             "total_cost": 0.001,
         },
     ]

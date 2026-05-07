@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -25,6 +26,8 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def build_backtest_summary(result: BacktestResult) -> dict[str, float | int]:
+    running_peak = np.maximum.accumulate(result.equity)
+    drawdown = result.equity / running_peak - 1.0
     return {
         "initial_equity": float(result.equity[0]),
         "final_equity": float(result.equity[-1]),
@@ -33,6 +36,7 @@ def build_backtest_summary(result: BacktestResult) -> dict[str, float | int]:
         "mean_period_return": float(result.period_returns.mean())
         if result.period_returns.size
         else 0.0,
+        "max_drawdown": float(abs(drawdown.min())),
         "total_cost": float(result.costs.sum()),
         "terminal_liquidation_cost": float(result.terminal_liquidation_cost),
         "missing_weighted_return_count": int(result.missing_weighted_return_count),
@@ -150,6 +154,7 @@ def write_scan_artifacts(
         "total_return",
         "period_count",
         "mean_period_return",
+        "max_drawdown",
         "total_cost",
         "terminal_liquidation_cost",
         "missing_weighted_return_count",

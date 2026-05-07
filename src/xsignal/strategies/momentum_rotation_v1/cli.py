@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import itertools
 import json
@@ -301,6 +302,98 @@ def _scan_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _as_float(row: dict[str, str], key: str, default: float = 0.0) -> float:
+    value = row.get(key)
+    if value in (None, ""):
+        return default
+    return float(value)
+
+
+def _selection_score(
+    row: dict[str, str],
+    *,
+    drawdown_penalty: float,
+    missing_return_penalty: float,
+) -> float:
+    return (
+        _as_float(row, "total_return")
+        - drawdown_penalty * _as_float(row, "max_drawdown")
+        - missing_return_penalty * _as_float(row, "missing_weighted_return_weight")
+    )
+
+
+def _format_float(value: str) -> str:
+    return str(float(value))
+
+
+def _build_holdout_run_command(
+    *,
+    root: str,
+    selection_id: str,
+    selected: dict[str, str | float],
+    data_split: dict,
+) -> str:
+    holdout_start = data_split.get("holdout_start")
+    if not holdout_start:
+        raise ValueError("scan manifest does not contain a holdout_start")
+    start_date = str(holdout_start).split("T", 1)[0]
+    return (
+        "xsignal-momentum-v1 run "
+        f"--root {root} "
+        "--offline "
+        f"--run-id {selection_id}-holdout "
+        f"--top-n {int(float(selected['top_n']))} "
+        f"--fee-bps {_format_float(str(selected['fee_bps']))} "
+        f"--slippage-bps {_format_float(str(selected['slippage_bps']))} "
+        "--min-rolling-7d-quote-volume "
+        f"{_format_float(str(selected['min_rolling_7d_quote_volume']))} "
+        f"--start-date {start_date}"
+    )
+
+
+def _select_command(args: argparse.Namespace) -> Path:
+    paths = MomentumRotationPaths(root=Path(args.root))
+    scan_dir = paths.scan_dir(args.scan_id)
+    manifest = json.loads((scan_dir / "manifest.json").read_text())
+    with (scan_dir / "summary.csv").open(newline="") as source:
+        rows = list(csv.DictReader(source))
+    if not rows:
+        raise ValueError("scan summary.csv has no rows")
+    scored_rows = []
+    for row in rows:
+        score = _selection_score(
+            row,
+            drawdown_penalty=args.drawdown_penalty,
+            missing_return_penalty=args.missing_return_penalty,
+        )
+        scored = dict(row)
+        scored["score"] = score
+        scored_rows.append(scored)
+    selected = max(scored_rows, key=lambda row: float(row["score"]))
+    selection_id = args.selection_id or uuid.uuid4().hex
+    command = _build_holdout_run_command(
+        root=args.run_root,
+        selection_id=selection_id,
+        selected=selected,
+        data_split=manifest.get("data_split") or {},
+    )
+    output = scan_dir / "selections" / f"{selection_id}.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "selection_id": selection_id,
+        "scan_id": args.scan_id,
+        "drawdown_penalty": args.drawdown_penalty,
+        "missing_return_penalty": args.missing_return_penalty,
+        "selected": selected,
+        "data_split": manifest.get("data_split"),
+        "holdout_run_command": command,
+    }
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    print(output)
+    print(command)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run momentum_rotation_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -353,6 +446,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Rebuild prepared arrays even if a prepared cache entry exists",
     )
     scan_parser.set_defaults(func=_scan_command)
+
+    select_parser = subparsers.add_parser("select")
+    select_parser.add_argument("--root", default="data")
+    select_parser.add_argument("--scan-id", required=True)
+    select_parser.add_argument("--selection-id")
+    select_parser.add_argument("--run-root", default="data")
+    select_parser.add_argument("--drawdown-penalty", type=float, default=1.0)
+    select_parser.add_argument("--missing-return-penalty", type=float, default=1.0)
+    select_parser.set_defaults(func=_select_command)
     args = parser.parse_args(argv)
     args.func(args)
     return 0

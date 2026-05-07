@@ -120,3 +120,23 @@ Expected scan outputs:
 - `manifest.json`
 - `summary.json`
 - `summary.csv`
+
+Select parameters from a scan using return minus risk penalties:
+
+```bash
+xsignal-momentum-v1 select \
+  --root data \
+  --scan-id <scan_id> \
+  --selection-id selected-v1 \
+  --drawdown-penalty 1 \
+  --missing-return-penalty 1
+```
+
+The selector writes:
+
+```text
+data/strategies/momentum_rotation_v1/scans/<scan_id>/selections/<selection_id>.json
+```
+
+The selection file includes the chosen parameters and a ready-to-run holdout
+command for the reserved production-test window.
