@@ -17,6 +17,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_artifacts import (
     build_trailing_summary,
+    write_trailing_scan_artifacts,
     write_trailing_run_artifacts,
 )
 
@@ -169,3 +170,63 @@ def test_write_trailing_run_artifacts_writes_empty_trade_table(tmp_path):
 
     assert pq.read_table(run_dir / "trades.parquet").num_rows == 0
     assert pq.read_table(run_dir / "daily_positions.parquet").num_rows == 0
+
+
+def test_write_trailing_scan_artifacts_creates_manifest_summary_csv_and_top_configs(tmp_path):
+    paths = VolumePriceEfficiencyPaths(root=tmp_path)
+    config = VolumePriceEfficiencyConfig()
+    rows = [
+        {
+            "scan_id": "trailscan",
+            "config_hash": "hash1",
+            "efficiency_percentile": 0.9,
+            "min_move_unit": 1.2,
+            "min_volume_unit": 1.5,
+            "min_close_position": 0.94,
+            "min_body_ratio": 0.85,
+            "fee_bps": 5.0,
+            "slippage_bps": 5.0,
+            "baseline_seed": 17,
+            "atr_multiplier": 2.0,
+            "symbol_count": 2,
+            "trade_count": 20,
+            "win_rate": 0.45,
+            "mean_net_realized_return": 0.01,
+            "average_holding_bars": 5.0,
+            "total_ignored_signal_count": 3,
+            "final_equity": 1.08,
+            "total_return": 0.08,
+            "max_drawdown": 0.02,
+            "score": 0.06,
+        }
+    ]
+
+    scan_dir = write_trailing_scan_artifacts(
+        paths=paths,
+        scan_id="trailscan",
+        base_config=config,
+        rows=rows,
+        top_configs=rows,
+        canonical_manifests=["manifest.json"],
+        git_commit="abc123",
+        runtime_seconds=2.5,
+        symbol_count=2,
+        data_split={"holdout_days": 180},
+        atr_multiplier=2.0,
+        min_trades=10,
+    )
+
+    assert scan_dir == paths.trailing_scan_dir("trailscan")
+    manifest = json.loads((scan_dir / "manifest.json").read_text())
+    summary = json.loads((scan_dir / "summary.json").read_text())
+    top = json.loads((scan_dir / "top_configs.json").read_text())
+    assert manifest["run_type"] == "trailing_stop_research_scan"
+    assert manifest["data_split"]["holdout_days"] == 180
+    assert manifest["atr_multiplier"] == 2.0
+    assert manifest["min_trades"] == 10
+    assert set(manifest["outputs"]) == {"summary", "summary_csv", "top_configs"}
+    assert summary["combination_count"] == 1
+    assert summary["eligible_combination_count"] == 1
+    assert summary["best_score"] == 0.06
+    assert top == rows
+    assert "hash1" in (scan_dir / "summary.csv").read_text()

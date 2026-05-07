@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,25 @@ def build_trailing_summary(result: TrailingStopResult) -> dict[str, float | int 
         else 0.0,
         "max_drawdown": float(abs(drawdown.min())) if drawdown.size else None,
     }
+
+
+def _score_values(rows: list[dict[str, Any]]) -> list[float]:
+    return [float(row["score"]) for row in rows if row.get("score") is not None]
+
+
+def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _trade_schema() -> pa.Schema:
@@ -233,3 +253,58 @@ def write_trailing_run_artifacts(
     pq.write_table(_equity_table(open_times, result), run_dir / "equity_curve.parquet")
     pq.write_table(_positions_table(symbols, open_times, result), run_dir / "daily_positions.parquet")
     return run_dir
+
+
+def write_trailing_scan_artifacts(
+    *,
+    paths: VolumePriceEfficiencyPaths,
+    scan_id: str,
+    base_config: VolumePriceEfficiencyConfig,
+    rows: list[dict[str, Any]],
+    top_configs: list[dict[str, Any]],
+    canonical_manifests: list[str],
+    git_commit: str,
+    runtime_seconds: float,
+    symbol_count: int,
+    data_split: dict[str, Any],
+    atr_multiplier: float,
+    min_trades: int,
+) -> Path:
+    scan_dir = paths.trailing_scan_dir(scan_id)
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    scores = _score_values(rows)
+    eligible_scores = _score_values(top_configs)
+    eligible_count = sum(1 for row in rows if int(row.get("trade_count") or 0) >= min_trades)
+    summary = {
+        "scan_id": scan_id,
+        "combination_count": len(rows),
+        "eligible_combination_count": eligible_count,
+        "runtime_seconds": runtime_seconds,
+        "best_score": _rounded(max(eligible_scores or scores) if rows else None),
+    }
+    manifest = {
+        "strategy_name": base_config.strategy_name,
+        "strategy_version": "v1",
+        "run_type": "trailing_stop_research_scan",
+        "scan_id": scan_id,
+        "git_commit": git_commit,
+        "base_config": base_config.model_dump(mode="json"),
+        "base_config_hash": base_config.config_hash(),
+        "atr_multiplier": atr_multiplier,
+        "min_trades": min_trades,
+        "canonical_manifests": canonical_manifests,
+        "symbol_count": symbol_count,
+        "runtime_seconds": runtime_seconds,
+        "combination_count": len(rows),
+        "data_split": data_split,
+        "outputs": {
+            "summary": str(scan_dir / "summary.json"),
+            "summary_csv": str(scan_dir / "summary.csv"),
+            "top_configs": str(scan_dir / "top_configs.json"),
+        },
+    }
+    _write_json(scan_dir / "manifest.json", manifest)
+    _write_json(scan_dir / "summary.json", summary)
+    _write_json(scan_dir / "top_configs.json", top_configs)
+    _write_summary_csv(scan_dir / "summary.csv", rows)
+    return scan_dir

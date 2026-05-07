@@ -185,3 +185,128 @@ def test_cli_trail_requires_fixed_two_atr_multiplier(tmp_path, monkeypatch):
         assert "atr_multiplier must stay fixed at 2.0" in str(exc)
     else:
         raise AssertionError("trail should reject non-2.0 ATR multiplier")
+
+
+def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, monkeypatch):
+    arrays = _arrays(8)
+    research_arrays = _arrays(5)
+    captured = {"split": [], "features": [], "simulate": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: arrays,
+    )
+
+    def fake_split(split_arrays, *, holdout_days):
+        captured["split"].append((split_arrays, holdout_days))
+        return (
+            research_arrays,
+            _arrays(3),
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T16:00:00Z",
+                "holdout_start": "2026-01-01T20:00:00Z",
+                "holdout_end": "2026-01-02T04:00:00Z",
+            },
+        )
+
+    def fake_compute_features(feature_arrays, config):
+        captured["features"].append((feature_arrays, config))
+        return _features(feature_arrays.open.shape[0])
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        captured["simulate"].append((sim_arrays, features, config, atr_multiplier))
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+            ],
+            equity=np.array([1.0, 1.04], dtype=np.float64),
+            period_returns=np.array([0.04], dtype=np.float64),
+            positions=np.zeros((2, 1), dtype=bool),
+            stop_prices=np.full((2, 1), np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        fake_split,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        fake_compute_features,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-scan",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "trailscan",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--efficiency-percentile",
+            "0.9,0.95",
+            "--min-move-unit",
+            "1.2",
+            "--min-volume-unit",
+            "1.5",
+            "--min-close-position",
+            "0.94",
+            "--min-body-ratio",
+            "0.85",
+            "--top-k",
+            "1",
+            "--min-trades",
+            "1",
+        ]
+    )
+
+    scan_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_scans"
+        / "trailscan"
+    )
+    manifest = json.loads((scan_dir / "manifest.json").read_text())
+    top_configs = json.loads((scan_dir / "top_configs.json").read_text())
+    assert exit_code == 0
+    assert captured["split"] == [(arrays, 7)]
+    assert [config.efficiency_percentile for _arrays, config in captured["features"]] == [0.9, 0.95]
+    assert [call[0] for call in captured["simulate"]] == [research_arrays, research_arrays]
+    assert manifest["run_type"] == "trailing_stop_research_scan"
+    assert manifest["data_split"]["holdout_days"] == 7
+    assert manifest["combination_count"] == 2
+    assert len(top_configs) == 1
+    assert (scan_dir / "summary.csv").exists()
+
+
+def test_cli_trail_scan_refuses_non_offline_mode(tmp_path):
+    try:
+        main(["trail-scan", "--root", str(tmp_path), "--scan-id", "online"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("non-offline trail-scan should fail")
