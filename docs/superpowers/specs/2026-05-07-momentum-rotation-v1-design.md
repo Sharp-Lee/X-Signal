@@ -79,14 +79,14 @@ Required columns:
 
 The strategy should treat `is_complete` and `has_synthetic` as eligibility inputs even though the first version uses `raw`, where `has_synthetic` should normally be false.
 
-The first version should require every sampled source bar used by the score windows to satisfy:
+The first version should require every source bar inside the score windows to satisfy:
 
 ```text
 is_complete == true
 has_synthetic == false
 ```
 
-This conservative rule keeps the first result easy to audit. Later versions can relax this per strategy if the data-quality trade-off is intentional.
+The rule applies to every source bar inside each lookback window, not only the two endpoint bars used for return calculation. This conservative rule keeps the first result easy to audit. Later versions can relax this per strategy if the data-quality trade-off is intentional.
 
 ## Prepared Array Layout
 
@@ -152,10 +152,19 @@ Return definition:
 return_window = close_now / close_window_ago - 1
 ```
 
+Time alignment:
+
+- All timestamps are UTC.
+- Daily rebalance timestamps are derived from completed `1d` bars.
+- A rebalance timestamp `t` means the daily bar ending at `t` has just closed.
+- The `1h` and `4h` close values used at `t` must be the latest completed bars with close time `<= t`.
+- If the latest required `1h`, `4h`, or `1d` bar is missing at `t`, the symbol is ineligible for that rebalance.
+- Returns and masks must be shifted so a decision at `t` cannot use any bar closing after `t`.
+
 Eligibility rules:
 
 - All required windows must exist.
-- All sampled bars used by the lookback windows must pass the data-quality rule.
+- All source bars inside the lookback windows must pass the data-quality rule.
 - The symbol must have positive close prices.
 - The symbol must meet the liquidity filter.
 
@@ -190,6 +199,7 @@ initial_equity = 1.0
 Return accounting:
 
 - Use close-to-close daily returns for selected symbols.
+- All timestamps are UTC.
 - A daily bar with `open_time = d` represents the interval `[d, d + 1d)`.
 - The close of that bar becomes available at `d + 1d`.
 - Rebalance decisions made after that close are applied to the next daily return.
