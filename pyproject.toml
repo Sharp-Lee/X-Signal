@@ -19,6 +19,7 @@ dev = [
 
 [project.scripts]
 xsignal-export = "xsignal.data.canonical_export:main"
+xsignal-momentum-v1 = "xsignal.strategies.momentum_rotation_v1.cli:main"
 
 [build-system]
 requires = ["setuptools>=69.0"]
