@@ -15,6 +15,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     RegimeFilterRule,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
+    build_regime_validation_trade_rows,
     build_regime_walk_forward_fold_row,
     build_regime_stability_summary,
     select_stable_regime_filters,
@@ -162,6 +163,80 @@ def test_select_stable_regime_filters_prefers_consistency_over_raw_train_score()
     ) == [rows[1]]
 
 
+def test_build_regime_validation_trade_rows_adds_fold_rule_and_feature_context():
+    rule = RegimeFilterRule(
+        rule_id="pre_signal_atr_contraction_gte_p50",
+        feature_name="pre_signal_atr_contraction",
+        direction="gte",
+        quantile=0.5,
+        threshold=0.96,
+    )
+
+    rows = build_regime_validation_trade_rows(
+        regime_walk_forward_id="rwf",
+        fold_index=15,
+        fold=build_walk_forward_folds(_open_times(20), train_days=10, test_days=5)[0],
+        selected_train_row={
+            "score": 0.024,
+            "trade_count": 100,
+            "signal_keep_rate": 0.5,
+        },
+        validation_row={
+            "score": -0.0068,
+            "trade_count": 1,
+            "signal_keep_rate": 0.4,
+        },
+        selected_rule=rule,
+        trades=[
+            {
+                "symbol": "BTCUSDT",
+                "signal_open_time": "2026-01-11T00:00:00+00:00",
+                "entry_open_time": "2026-01-11T04:00:00+00:00",
+                "exit_time": "2026-01-12T00:00:00+00:00",
+                "net_realized_return": -0.012,
+                "holding_bars": 5,
+                "atr_at_entry": 2.0,
+            }
+        ],
+        trade_feature_rows=[
+            {
+                "pre_signal_atr_contraction": 1.08,
+                "market_lookback_return": -0.04,
+            }
+        ],
+    )
+
+    assert rows == [
+        {
+            "regime_walk_forward_id": "rwf",
+            "fold_index": 15,
+            "test_start": "2026-01-11T00:00:00+00:00",
+            "test_end": "2026-01-16T00:00:00+00:00",
+            "rule_id": "pre_signal_atr_contraction_gte_p50",
+            "feature_name": "pre_signal_atr_contraction",
+            "direction": "gte",
+            "quantile": 0.5,
+            "threshold": 0.96,
+            "threshold_source": "train_fold_signal_distribution",
+            "train_score": 0.024,
+            "train_trade_count": 100,
+            "train_signal_keep_rate": 0.5,
+            "validation_score": -0.0068,
+            "validation_trade_count": 1,
+            "validation_signal_keep_rate": 0.4,
+            "symbol": "BTCUSDT",
+            "signal_open_time": "2026-01-11T00:00:00+00:00",
+            "entry_open_time": "2026-01-11T04:00:00+00:00",
+            "exit_time": "2026-01-12T00:00:00+00:00",
+            "net_realized_return": -0.012,
+            "holding_bars": 5,
+            "atr_at_entry": 2.0,
+            "pre_signal_atr_contraction": 1.08,
+            "market_lookback_return": -0.04,
+        }
+    ]
+
+
 def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
     paths = VolumePriceEfficiencyPaths(root=tmp_path)
     config = VolumePriceEfficiencyConfig()
@@ -192,6 +267,15 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
             "trade_count": 22,
         }
     ]
+    validation_trade_rows = [
+        {
+            "regime_walk_forward_id": "rwf",
+            "fold_index": 0,
+            "rule_id": rule.rule_id,
+            "symbol": "BTCUSDT",
+            "net_realized_return": -0.01,
+        }
+    ]
 
     output = write_trailing_regime_walk_forward_artifacts(
         paths=paths,
@@ -199,6 +283,7 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
         config=config,
         fold_rows=fold_rows,
         selection_rows=selection_rows,
+        validation_trade_rows=validation_trade_rows,
         top_filters=selection_rows,
         canonical_manifests=["manifest.json"],
         git_commit="abc123",
@@ -231,7 +316,10 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
         "fold_summary",
         "fold_summary_csv",
         "selection_summary",
+        "validation_trades",
+        "validation_trades_csv",
         "top_filters",
     }
     assert pq.read_table(output / "fold_summary.parquet").num_rows == 1
     assert pq.read_table(output / "selection_summary.parquet").num_rows == 1
+    assert pq.read_table(output / "validation_trades.parquet").to_pylist() == validation_trade_rows
