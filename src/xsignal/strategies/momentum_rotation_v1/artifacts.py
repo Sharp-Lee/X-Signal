@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,19 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_safe) + "\n")
 
 
+def build_backtest_summary(result: BacktestResult) -> dict[str, float | int]:
+    return {
+        "initial_equity": float(result.equity[0]),
+        "final_equity": float(result.equity[-1]),
+        "total_return": float(result.equity[-1] / result.equity[0] - 1.0),
+        "period_count": int(result.period_returns.shape[0]),
+        "mean_period_return": float(result.period_returns.mean())
+        if result.period_returns.size
+        else 0.0,
+        "total_cost": float(result.costs.sum()),
+    }
+
+
 def write_run_artifacts(
     *,
     paths: MomentumRotationPaths,
@@ -37,16 +51,7 @@ def write_run_artifacts(
 ) -> Path:
     run_dir = paths.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "initial_equity": float(result.equity[0]),
-        "final_equity": float(result.equity[-1]),
-        "total_return": float(result.equity[-1] / result.equity[0] - 1.0),
-        "period_count": int(result.period_returns.shape[0]),
-        "mean_period_return": float(result.period_returns.mean())
-        if result.period_returns.size
-        else 0.0,
-        "total_cost": float(result.costs.sum()),
-    }
+    summary = build_backtest_summary(result)
     manifest = {
         "strategy_name": config.strategy_name,
         "strategy_version": "v1",
@@ -88,3 +93,61 @@ def write_run_artifacts(
                 )
     pq.write_table(pa.Table.from_pylist(position_rows), run_dir / "daily_positions.parquet")
     return run_dir
+
+
+def write_scan_artifacts(
+    *,
+    paths: MomentumRotationPaths,
+    scan_id: str,
+    base_config: MomentumRotationConfig,
+    rows: list[dict[str, Any]],
+    canonical_manifests: list[str],
+    git_commit: str,
+    runtime_seconds: float,
+    symbol_count: int,
+) -> Path:
+    scan_dir = paths.scan_dir(scan_id)
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "scan_id": scan_id,
+        "combination_count": len(rows),
+        "runtime_seconds": runtime_seconds,
+        "best_final_equity": max((float(row["final_equity"]) for row in rows), default=None),
+    }
+    manifest = {
+        "strategy_name": base_config.strategy_name,
+        "strategy_version": "v1",
+        "scan_id": scan_id,
+        "git_commit": git_commit,
+        "base_config": base_config.model_dump(mode="json"),
+        "base_config_hash": base_config.config_hash(),
+        "canonical_manifests": canonical_manifests,
+        "symbol_count": symbol_count,
+        "runtime_seconds": runtime_seconds,
+        "combination_count": len(rows),
+        "outputs": {
+            "summary": str(scan_dir / "summary.json"),
+            "summary_csv": str(scan_dir / "summary.csv"),
+        },
+    }
+    _write_json(scan_dir / "manifest.json", manifest)
+    _write_json(scan_dir / "summary.json", summary)
+    fieldnames = [
+        "scan_id",
+        "config_hash",
+        "top_n",
+        "fee_bps",
+        "slippage_bps",
+        "min_rolling_7d_quote_volume",
+        "initial_equity",
+        "final_equity",
+        "total_return",
+        "period_count",
+        "mean_period_return",
+        "total_cost",
+    ]
+    with (scan_dir / "summary.csv").open("w", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    return scan_dir
