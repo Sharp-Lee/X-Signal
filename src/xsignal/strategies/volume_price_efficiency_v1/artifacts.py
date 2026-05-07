@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -43,7 +44,7 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _write_json(path: Path, payload: dict) -> None:
+def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_safe) + "\n")
 
@@ -237,3 +238,89 @@ def write_run_artifacts(
         run_dir / "baseline_events.parquet",
     )
     return run_dir
+
+
+def _score_values(rows: list[dict[str, Any]]) -> list[float]:
+    return [float(row["score"]) for row in rows if row.get("score") is not None]
+
+
+def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("")
+        return
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _bucket_table(rows: list[dict[str, Any]]) -> pa.Table:
+    if rows:
+        return pa.Table.from_pylist(rows)
+    return pa.table(
+        {
+            "config_hash": pa.array([], type=pa.string()),
+            "feature_name": pa.array([], type=pa.string()),
+            "bucket_index": pa.array([], type=pa.int64()),
+            "bucket_count": pa.array([], type=pa.int64()),
+            "lower_bound": pa.array([], type=pa.float64()),
+            "upper_bound": pa.array([], type=pa.float64()),
+            "event_count": pa.array([], type=pa.int64()),
+        }
+    )
+
+
+def write_scan_artifacts(
+    *,
+    paths: VolumePriceEfficiencyPaths,
+    scan_id: str,
+    base_config: VolumePriceEfficiencyConfig,
+    rows: list[dict[str, Any]],
+    top_configs: list[dict[str, Any]],
+    bucket_rows: list[dict[str, Any]],
+    canonical_manifests: list[str],
+    git_commit: str,
+    runtime_seconds: float,
+    symbol_count: int,
+    data_split: dict[str, Any] | None = None,
+) -> Path:
+    scan_dir = paths.scan_dir(scan_id)
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    scores = _score_values(rows)
+    summary = {
+        "scan_id": scan_id,
+        "combination_count": len(rows),
+        "runtime_seconds": runtime_seconds,
+        "best_score": _rounded(max(scores) if scores else None),
+    }
+    manifest = {
+        "strategy_name": base_config.strategy_name,
+        "strategy_version": "v1",
+        "scan_id": scan_id,
+        "git_commit": git_commit,
+        "base_config": base_config.model_dump(mode="json"),
+        "base_config_hash": base_config.config_hash(),
+        "canonical_manifests": canonical_manifests,
+        "symbol_count": symbol_count,
+        "runtime_seconds": runtime_seconds,
+        "combination_count": len(rows),
+        "outputs": {
+            "summary": str(scan_dir / "summary.json"),
+            "summary_csv": str(scan_dir / "summary.csv"),
+            "top_configs": str(scan_dir / "top_configs.json"),
+            "bucket_summary": str(scan_dir / "bucket_summary.parquet"),
+        },
+    }
+    if data_split is not None:
+        manifest["data_split"] = data_split
+    _write_json(scan_dir / "manifest.json", manifest)
+    _write_json(scan_dir / "summary.json", summary)
+    _write_json(scan_dir / "top_configs.json", top_configs)
+    _write_summary_csv(scan_dir / "summary.csv", rows)
+    pq.write_table(_bucket_table(bucket_rows), scan_dir / "bucket_summary.parquet")
+    return scan_dir

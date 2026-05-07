@@ -10,6 +10,7 @@ from xsignal.strategies.volume_price_efficiency_v1.config import (
 from xsignal.strategies.volume_price_efficiency_v1.data import OhlcvArrays
 from xsignal.strategies.volume_price_efficiency_v1.features import (
     FeatureArrays,
+    build_signal_mask,
     compute_features,
 )
 
@@ -165,3 +166,29 @@ def test_bad_quality_row_never_signals():
     features = compute_features(arrays, config)
 
     assert not features.signal[3, 0]
+
+
+def test_build_signal_mask_reuses_features_with_different_filter_thresholds():
+    arrays = _arrays(
+        open_values=[100, 100, 100, 100],
+        high_values=[101, 101, 101, 108],
+        low_values=[99, 99, 99, 99],
+        close_values=[100.5, 100.5, 100.5, 107],
+        quote_volume_values=[1000, 1000, 1000, 1000],
+    )
+    loose_config = VolumePriceEfficiencyConfig(
+        atr_window=1,
+        volume_window=1,
+        efficiency_lookback=1,
+        min_move_unit=0.5,
+        min_volume_unit=0.3,
+        min_close_position=0.7,
+        min_body_ratio=0.4,
+    )
+    strict_config = loose_config.model_copy(update={"min_move_unit": 10.0})
+
+    features = compute_features(arrays, loose_config)
+    strict_signal = build_signal_mask(arrays, features, strict_config)
+
+    assert features.signal[3, 0]
+    assert strict_signal.tolist() == [[False], [False], [False], [False]]

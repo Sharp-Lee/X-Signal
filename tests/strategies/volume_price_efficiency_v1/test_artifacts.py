@@ -6,6 +6,7 @@ import pyarrow.parquet as pq
 
 from xsignal.strategies.volume_price_efficiency_v1.artifacts import (
     build_event_study_summary,
+    write_scan_artifacts,
     write_run_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.config import (
@@ -131,3 +132,87 @@ def test_write_run_artifacts_writes_empty_event_tables(tmp_path):
 
     assert pq.read_table(run_dir / "events.parquet").num_rows == 0
     assert pq.read_table(run_dir / "baseline_events.parquet").num_rows == 0
+
+
+def test_write_scan_artifacts_creates_manifest_summaries_csv_and_buckets(tmp_path):
+    paths = VolumePriceEfficiencyPaths(root=tmp_path)
+    config = VolumePriceEfficiencyConfig(horizons=(1,))
+    rows = [
+        {
+            "scan_id": "scan123",
+            "config_hash": "hash1",
+            "efficiency_percentile": 0.9,
+            "min_move_unit": 0.5,
+            "min_volume_unit": 0.3,
+            "min_close_position": 0.7,
+            "min_body_ratio": 0.4,
+            "fee_bps": 5.0,
+            "slippage_bps": 5.0,
+            "baseline_seed": 17,
+            "ranking_horizon": 1,
+            "event_count": 10,
+            "baseline_event_count": 10,
+            "symbol_count": 2,
+            "h1_mean_return": 0.02,
+            "h1_net_mean_return": 0.018,
+            "h1_baseline_mean_return": 0.01,
+            "h1_event_minus_baseline_mean_return": 0.01,
+            "h1_win_rate": 0.6,
+            "score": 0.01,
+        }
+    ]
+    top_configs = [rows[0]]
+    bucket_rows = [
+        {
+            "config_hash": "hash1",
+            "feature_name": "efficiency",
+            "bucket_index": 0,
+            "bucket_count": 5,
+            "lower_bound": 1.0,
+            "upper_bound": 2.0,
+            "event_count": 3,
+            "h1_mean_return": 0.02,
+            "h1_net_mean_return": 0.018,
+            "h1_win_rate": 0.6,
+        }
+    ]
+
+    scan_dir = write_scan_artifacts(
+        paths=paths,
+        scan_id="scan123",
+        base_config=config,
+        rows=rows,
+        top_configs=top_configs,
+        bucket_rows=bucket_rows,
+        canonical_manifests=["manifest.json"],
+        git_commit="abc123",
+        runtime_seconds=2.5,
+        symbol_count=2,
+        data_split={
+            "holdout_days": 180,
+            "research_start": "2020-01-01T00:00:00Z",
+            "research_end": "2025-11-08T20:00:00Z",
+            "holdout_start": "2025-11-09T00:00:00Z",
+            "holdout_end": "2026-05-07T04:00:00Z",
+        },
+    )
+
+    assert scan_dir == paths.scan_dir("scan123")
+    manifest = json.loads((scan_dir / "manifest.json").read_text())
+    summary = json.loads((scan_dir / "summary.json").read_text())
+    top = json.loads((scan_dir / "top_configs.json").read_text())
+    assert manifest["strategy_name"] == "volume_price_efficiency_v1"
+    assert manifest["scan_id"] == "scan123"
+    assert manifest["base_config_hash"] == config.config_hash()
+    assert manifest["data_split"]["holdout_days"] == 180
+    assert set(manifest["outputs"]) == {
+        "summary",
+        "summary_csv",
+        "top_configs",
+        "bucket_summary",
+    }
+    assert summary["combination_count"] == 1
+    assert summary["best_score"] == 0.01
+    assert top == top_configs
+    assert "hash1" in (scan_dir / "summary.csv").read_text()
+    assert pq.read_table(scan_dir / "bucket_summary.parquet").num_rows == 1
