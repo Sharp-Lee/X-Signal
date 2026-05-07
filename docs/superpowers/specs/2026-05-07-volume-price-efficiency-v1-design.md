@@ -271,6 +271,7 @@ Required artifacts:
 ```text
 manifest.json
 events.parquet
+baseline_events.parquet
 summary.json
 ```
 
@@ -297,10 +298,31 @@ summary.json
   - `forward_return_6`
   - `forward_return_12`
   - `forward_return_30`
+  - `net_forward_return_1`
+  - `net_forward_return_3`
+  - `net_forward_return_6`
+  - `net_forward_return_12`
+  - `net_forward_return_30`
+
+Net forward returns should subtract a configurable round-trip cost:
+
+```text
+net_forward_return_H = forward_return_H - 2 * (fee_bps + slippage_bps) / 10_000
+```
+
+The event study is not a portfolio simulation, so this is only a simple
+round-trip friction estimate. It is still useful because a weak intraday edge can
+disappear after realistic costs.
+
+`baseline_events.parquet` should use the same schema as `events.parquet` and add:
+
+- `matched_signal_month`
+- `matched_signal_count_for_symbol_month`
 
 `summary.json` should include:
 
 - `event_count`
+- `baseline_event_count`
 - `symbol_count`
 - `first_signal_time`
 - `last_signal_time`
@@ -310,6 +332,14 @@ summary.json
   - median return
   - win rate
   - p10, p25, p75, p90
+  - net mean return
+  - net median return
+  - net win rate
+  - baseline mean return
+  - baseline median return
+  - baseline win rate
+  - event minus baseline mean return
+  - event minus baseline median return
 - top contributing symbols by event count
 - top contributing symbols by average forward return
 
