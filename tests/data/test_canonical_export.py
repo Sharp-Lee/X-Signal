@@ -537,6 +537,28 @@ def test_partitions_for_full_history_uses_months_for_intraday_timeframes():
     ]
 
 
+def test_partitions_for_full_history_uses_months_for_12h_timeframe():
+    partitions = partitions_for_full_history(
+        timeframe="12h",
+        start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+        end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+    )
+
+    assert partitions == [
+        Partition(timeframe="12h", year=2026, month=4),
+        Partition(timeframe="12h", year=2026, month=5),
+    ]
+
+
+def test_partitions_for_full_history_rejects_deferred_3d_timeframe():
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        partitions_for_full_history(
+            timeframe="3d",
+            start=datetime(2026, 4, 10, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+
 def test_partitions_for_full_history_excludes_exact_month_start_end():
     partitions = partitions_for_full_history(
         timeframe="1h",

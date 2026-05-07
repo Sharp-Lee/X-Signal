@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from xsignal.data.canonical_bars import CanonicalRequest, Partition, partition_bounds
+from xsignal.data.canonical_bars import (
+    CanonicalRequest,
+    Partition,
+    partition_bounds,
+    timeframe_spec,
+)
 from xsignal.data.catalog import Catalog, PartitionStatus
 from xsignal.data.clickhouse import ClickHouseClient, ClickHouseConfig
 from xsignal.data.locks import ExportLock, atomic_publish
@@ -47,7 +52,7 @@ def partitions_for_full_history(
         raise ValueError("end must be after start")
 
     partitions: list[Partition] = []
-    if timeframe == "1d":
+    if timeframe_spec(timeframe).partition_grain == "year":
         last_year = end.year
         if (
             end.month == 1
