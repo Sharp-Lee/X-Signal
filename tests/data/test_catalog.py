@@ -221,6 +221,47 @@ def test_catalog_treats_fill_policy_mismatch_as_stale(tmp_path):
     assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
 
 
+def test_catalog_accepts_filled_output_columns(tmp_path):
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.published_parquet_path(partition, "abc123")
+    write_canonical_parquet(
+        parquet_path,
+        fill_policy="prev_close_zero_volume",
+        synthetic_1m_count=2,
+        has_synthetic=True,
+    )
+    manifest = make_manifest(
+        partition,
+        parquet_path,
+        fill_policy="prev_close_zero_volume",
+        synthetic_generation_version="prev-close-zero-volume-v1",
+        synthetic_1m_count_total=2,
+        incomplete_raw_bar_count=1,
+    )
+    paths.manifest_path(partition).write_text(manifest.model_dump_json(indent=2))
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.COMPLETE
+
+
+def test_catalog_treats_wrong_synthetic_generation_version_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.published_parquet_path(partition, "abc123")
+    write_canonical_parquet(parquet_path, fill_policy="prev_close_zero_volume")
+    manifest = make_manifest(
+        partition,
+        parquet_path,
+        fill_policy="prev_close_zero_volume",
+        synthetic_generation_version="none",
+    )
+    paths.manifest_path(partition).write_text(manifest.model_dump_json(indent=2))
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
+
+
 def test_catalog_treats_wrong_source_table_as_stale(tmp_path):
     paths = CanonicalPaths(root=tmp_path)
     catalog = Catalog(paths=paths)

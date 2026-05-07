@@ -298,6 +298,52 @@ def test_cli_ensure_defaults_to_full_history_when_year_is_omitted(tmp_path, monk
     assert manifest_parquet_path(CanonicalPaths(root=Path("data")), june_partition).is_file()
 
 
+def test_cli_accepts_fill_policy_for_single_partition(tmp_path, monkeypatch):
+    exporter = FakeExporter(
+        bar_count=59,
+        fill_policy="prev_close_zero_volume",
+        synthetic_1m_count=1,
+        has_synthetic=True,
+    )
+
+    class FakeClickHouseClient:
+        def __init__(self, _config):
+            pass
+
+        def write_parquet(self, sql, path):
+            return exporter.export(sql, path)
+
+    monkeypatch.setattr("xsignal.data.canonical_export.ClickHouseClient", FakeClickHouseClient)
+
+    exit_code = main(
+        [
+            "ensure",
+            "--timeframe",
+            "1h",
+            "--fill-policy",
+            "prev_close_zero_volume",
+            "--year",
+            "2026",
+            "--month",
+            "5",
+            "--root",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "'prev_close_zero_volume' AS fill_policy" in exporter.calls[0][0]
+    assert (
+        tmp_path
+        / "canonical_bars"
+        / "timeframe=1h"
+        / "fill_policy=prev_close_zero_volume"
+        / "year=2026"
+        / "month=05"
+        / "manifest.json"
+    ).is_file()
+
+
 def test_discover_full_history_bounds_accepts_clickhouse_epoch_seconds():
     class FakeClient:
         def query_arrow(self, _sql: str):
