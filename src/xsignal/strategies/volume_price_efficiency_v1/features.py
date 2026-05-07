@@ -38,6 +38,28 @@ def _window_stat(values: np.ndarray, end_index: int, window: int, reducer) -> np
     return result
 
 
+def build_signal_mask(
+    arrays: OhlcvArrays,
+    features: FeatureArrays,
+    config: VolumePriceEfficiencyConfig,
+) -> np.ndarray:
+    signal = np.zeros(arrays.close.shape, dtype=bool)
+    for index in range(1, arrays.close.shape[0]):
+        signal[index] = (
+            arrays.quality[index]
+            & np.isfinite(features.efficiency[index])
+            & np.isfinite(features.efficiency[index - 1])
+            & np.isfinite(features.efficiency_threshold[index])
+            & (features.efficiency[index] > features.efficiency[index - 1])
+            & (features.efficiency[index] > features.efficiency_threshold[index])
+            & (features.move_unit[index] >= config.min_move_unit)
+            & (features.volume_unit[index] >= config.min_volume_unit)
+            & (features.close_position[index] >= config.min_close_position)
+            & (features.body_ratio[index] >= config.min_body_ratio)
+        )
+    return signal
+
+
 def compute_features(
     arrays: OhlcvArrays,
     config: VolumePriceEfficiencyConfig,
@@ -116,22 +138,7 @@ def compute_features(
             where=np.isfinite(volume_unit[index]),
         )
 
-        if index == 0:
-            continue
-        signal[index] = (
-            arrays.quality[index]
-            & np.isfinite(efficiency[index])
-            & np.isfinite(efficiency[index - 1])
-            & np.isfinite(efficiency_threshold[index])
-            & (efficiency[index] > efficiency[index - 1])
-            & (efficiency[index] > efficiency_threshold[index])
-            & (move_unit[index] >= config.min_move_unit)
-            & (volume_unit[index] >= config.min_volume_unit)
-            & (close_position[index] >= config.min_close_position)
-            & (body_ratio[index] >= config.min_body_ratio)
-        )
-
-    return FeatureArrays(
+    features = FeatureArrays(
         true_range=true_range,
         atr=atr,
         move_unit=move_unit,
@@ -142,4 +149,16 @@ def compute_features(
         close_position=close_position,
         body_ratio=body_ratio,
         signal=signal,
+    )
+    return FeatureArrays(
+        true_range=features.true_range,
+        atr=features.atr,
+        move_unit=features.move_unit,
+        volume_baseline=features.volume_baseline,
+        volume_unit=features.volume_unit,
+        efficiency=features.efficiency,
+        efficiency_threshold=features.efficiency_threshold,
+        close_position=features.close_position,
+        body_ratio=features.body_ratio,
+        signal=build_signal_mask(arrays, features, config),
     )

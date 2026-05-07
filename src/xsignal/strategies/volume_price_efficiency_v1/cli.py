@@ -4,6 +4,7 @@ import argparse
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from xsignal.strategies.volume_price_efficiency_v1.artifacts import (
@@ -19,7 +20,10 @@ from xsignal.strategies.volume_price_efficiency_v1.data import (
     prepare_ohlcv_arrays,
 )
 from xsignal.strategies.volume_price_efficiency_v1.events import build_event_rows
-from xsignal.strategies.volume_price_efficiency_v1.features import compute_features
+from xsignal.strategies.volume_price_efficiency_v1.features import (
+    build_signal_mask,
+    compute_features,
+)
 from xsignal.strategies.volume_price_efficiency_v1.paths import (
     VolumePriceEfficiencyPaths,
 )
@@ -115,8 +119,23 @@ def _scan_command(args: argparse.Namespace) -> Path:
     scan_id = args.scan_id or uuid.uuid4().hex
     rows = []
     bucket_rows = []
+    feature_cache = {}
     for config in configs:
-        features = compute_features(research_arrays, config)
+        feature_key = (
+            config.atr_window,
+            config.volume_window,
+            config.efficiency_lookback,
+            config.efficiency_percentile,
+            config.volume_floor,
+        )
+        cached_features = feature_cache.get(feature_key)
+        if cached_features is None:
+            cached_features = compute_features(research_arrays, config)
+            feature_cache[feature_key] = cached_features
+        features = replace(
+            cached_features,
+            signal=build_signal_mask(research_arrays, cached_features, config),
+        )
         events = build_event_rows(research_arrays, features, config)
         baseline_events = build_baseline_events(research_arrays, features, config)
         rows.append(

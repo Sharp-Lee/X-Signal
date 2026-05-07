@@ -289,3 +289,77 @@ def test_cli_scan_refuses_non_offline_mode(tmp_path):
         assert exc.code == 2
     else:
         raise AssertionError("non-offline scan should fail")
+
+
+def test_cli_scan_reuses_features_for_threshold_only_grid(tmp_path, monkeypatch):
+    arrays = _arrays()
+    compute_calls = []
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: arrays,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        lambda _arrays, *, holdout_days: (
+            arrays,
+            None,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T00:00:00Z",
+                "holdout_start": None,
+                "holdout_end": None,
+            },
+        ),
+    )
+
+    def fake_features(_arrays, config: VolumePriceEfficiencyConfig):
+        compute_calls.append(config)
+        return _features()
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        fake_features,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_event_rows",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_baseline_events",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    main(
+        [
+            "scan",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "cache-scan",
+            "--offline",
+            "--holdout-days",
+            "0",
+            "--efficiency-percentile",
+            "0.9",
+            "--min-move-unit",
+            "0.5,0.8",
+            "--min-volume-unit",
+            "0.3",
+            "--min-close-position",
+            "0.7",
+            "--min-body-ratio",
+            "0.4",
+        ]
+    )
+
+    assert len(compute_calls) == 1
