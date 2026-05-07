@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
 import numpy as np
 
@@ -135,4 +137,38 @@ def prepare_daily_arrays(
         quality_1h_24h=quality_1h_24h,
         quality_4h_7d=quality_4h_7d,
         quality_1d_30d=quality_1d_30d,
+    )
+
+
+def save_prepared_arrays(cache_dir: Path, arrays: PreparedArrays) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "symbols.json").write_text(json.dumps(list(arrays.symbols), indent=2) + "\n")
+    np.save(cache_dir / "times_1d.npy", arrays.rebalance_times, allow_pickle=True)
+    np.save(cache_dir / "close_1h.npy", arrays.close_1h)
+    np.save(cache_dir / "close_4h.npy", arrays.close_4h)
+    np.save(cache_dir / "close_1d.npy", arrays.close_1d)
+    np.save(cache_dir / "quote_volume_1d.npy", arrays.quote_volume_1d)
+    np.save(cache_dir / "complete_1h.npy", arrays.complete_1h)
+    np.save(cache_dir / "complete_4h.npy", arrays.complete_4h)
+    np.save(cache_dir / "complete_1d.npy", arrays.complete_1d)
+    np.save(cache_dir / "quality_1h_24h.npy", arrays.quality_1h_24h)
+    np.save(cache_dir / "quality_4h_7d.npy", arrays.quality_4h_7d)
+    np.save(cache_dir / "quality_1d_30d.npy", arrays.quality_1d_30d)
+
+
+def load_prepared_arrays(cache_dir: Path) -> PreparedArrays:
+    symbols = tuple(json.loads((cache_dir / "symbols.json").read_text()))
+    return PreparedArrays(
+        symbols=symbols,
+        rebalance_times=np.load(cache_dir / "times_1d.npy", allow_pickle=True),
+        close_1h=np.load(cache_dir / "close_1h.npy"),
+        close_4h=np.load(cache_dir / "close_4h.npy"),
+        close_1d=np.load(cache_dir / "close_1d.npy"),
+        quote_volume_1d=np.load(cache_dir / "quote_volume_1d.npy"),
+        complete_1h=np.load(cache_dir / "complete_1h.npy"),
+        complete_4h=np.load(cache_dir / "complete_4h.npy"),
+        complete_1d=np.load(cache_dir / "complete_1d.npy"),
+        quality_1h_24h=np.load(cache_dir / "quality_1h_24h.npy"),
+        quality_4h_7d=np.load(cache_dir / "quality_4h_7d.npy"),
+        quality_1d_30d=np.load(cache_dir / "quality_1d_30d.npy"),
     )

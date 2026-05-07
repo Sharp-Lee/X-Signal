@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pyarrow as pa
 
 from xsignal.strategies.momentum_rotation_v1.data import CanonicalBarTable
-from xsignal.strategies.momentum_rotation_v1.prepare import prepare_daily_arrays
+from xsignal.strategies.momentum_rotation_v1.prepare import (
+    load_prepared_arrays,
+    prepare_daily_arrays,
+    save_prepared_arrays,
+)
 
 
 def table_for(timeframe: str, rows: list[dict]) -> CanonicalBarTable:
@@ -92,3 +97,38 @@ def test_prepare_daily_arrays_marks_missing_intraday_close_incomplete():
     assert not prepared.complete_1h[1, 0]
     assert not prepared.quality_1h_24h[1, 0]
     assert np.isnan(prepared.close_1h[1, 0])
+
+
+def test_save_and_load_prepared_arrays_round_trip(tmp_path):
+    prepared = prepare_daily_arrays(
+        bars_1h=table_for(
+            "1h",
+            rows(
+                ["BTCUSDT"],
+                [datetime(2026, 1, 1, hour=i, tzinfo=timezone.utc) for i in range(24)],
+                10.0,
+                60,
+            ),
+        ),
+        bars_4h=table_for(
+            "4h",
+            rows(
+                ["BTCUSDT"],
+                [datetime(2026, 1, 1, hour=4 * i, tzinfo=timezone.utc) for i in range(6)],
+                20.0,
+                240,
+            ),
+        ),
+        bars_1d=table_for(
+            "1d",
+            rows(["BTCUSDT"], [datetime(2026, 1, 1, tzinfo=timezone.utc)], 30.0, 1440),
+        ),
+    )
+
+    save_prepared_arrays(tmp_path, prepared)
+    loaded = load_prepared_arrays(tmp_path)
+
+    assert json.loads((tmp_path / "symbols.json").read_text()) == ["BTCUSDT"]
+    assert loaded.symbols == prepared.symbols
+    assert loaded.rebalance_times.tolist() == prepared.rebalance_times.tolist()
+    assert np.array_equal(loaded.close_1d, prepared.close_1d, equal_nan=True)
