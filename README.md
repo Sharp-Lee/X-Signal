@@ -128,6 +128,9 @@ xsignal-momentum-v1 select \
   --root data \
   --scan-id <scan_id> \
   --selection-id selected-v1 \
+  --max-drawdown-lte 0.35 \
+  --missing-weight-lte 0.1 \
+  --min-periods 1000 \
   --drawdown-penalty 1 \
   --missing-return-penalty 1
 ```
@@ -139,4 +142,6 @@ data/strategies/momentum_rotation_v1/scans/<scan_id>/selections/<selection_id>.j
 ```
 
 The selection file includes the chosen parameters and a ready-to-run holdout
-command for the reserved production-test window.
+command for the reserved production-test window. Hard filters are applied before
+scoring, so unacceptable drawdown, missing-price exposure, or too-short research
+windows are excluded instead of merely penalized.
