@@ -80,3 +80,28 @@ Expected outputs:
 - `summary.json`
 - `equity_curve.parquet`
 - `daily_positions.parquet`
+
+Scan a lightweight parameter grid without writing per-combination position files:
+
+```bash
+xsignal-momentum-v1 scan \
+  --root data \
+  --offline \
+  --top-n 5,10,20 \
+  --fee-bps 5 \
+  --slippage-bps 2.5,5 \
+  --min-rolling-7d-quote-volume 0,10000000
+```
+
+The scan prepares canonical arrays once, reuses the prepared cache by default,
+and writes:
+
+```text
+data/strategies/momentum_rotation_v1/scans/<scan_id>/
+```
+
+Expected scan outputs:
+
+- `manifest.json`
+- `summary.json`
+- `summary.csv`

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 
 import numpy as np
@@ -155,6 +156,160 @@ def test_cli_run_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch)
 
     exit_code = main(
         ["run", "--root", str(tmp_path), "--run-id", "nocache-run", "--top-n", "1", "--no-cache"]
+    )
+
+    assert exit_code == 0
+    assert calls[0][3] is False
+
+
+def test_cli_scan_writes_summary_for_parameter_grid_with_single_prepare(tmp_path, monkeypatch):
+    arrays = PreparedArrays(
+        symbols=("BTCUSDT",),
+        rebalance_times=np.array(["2026-01-02", "2026-01-03"], dtype=object),
+        close_1h=np.array([[100.0], [101.0]]),
+        close_4h=np.array([[100.0], [101.0]]),
+        close_1d=np.array([[100.0], [101.0]]),
+        quote_volume_1d=np.ones((2, 1)),
+        complete_1h=np.ones((2, 1), dtype=bool),
+        complete_4h=np.ones((2, 1), dtype=bool),
+        complete_1d=np.ones((2, 1), dtype=bool),
+        quality_1h_24h=np.ones((2, 1), dtype=bool),
+        quality_4h_7d=np.ones((2, 1), dtype=bool),
+        quality_1d_30d=np.ones((2, 1), dtype=bool),
+    )
+    signals = SignalArrays(score=np.array([[1.0], [1.0]]), tradable_mask=np.ones((2, 1), dtype=bool))
+    prepare_calls = []
+    signal_min_volumes = []
+    backtest_configs = []
+
+    def fake_prepare(root, config, *, offline, use_cache):
+        prepare_calls.append((root, config, offline, use_cache))
+        return arrays, ["manifest.json"]
+
+    def fake_signals(_arrays, config):
+        signal_min_volumes.append(config.min_rolling_7d_quote_volume)
+        return signals
+
+    def fake_backtest(_arrays, _signals, config):
+        backtest_configs.append(config)
+        final_equity = 1.0 + config.top_n / 100.0 + config.slippage_bps / 10_000.0
+        return BacktestResult(
+            equity=np.array([1.0, final_equity]),
+            period_returns=np.array([final_equity - 1.0]),
+            weights=np.array([[1.0], [1.0]]),
+            turnover=np.array([1.0, 0.0]),
+            costs=np.array([config.fee_bps / 10_000.0, 0.0]),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.prepare_from_canonical",
+        fake_prepare,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.compute_momentum_signals",
+        fake_signals,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.run_backtest",
+        fake_backtest,
+    )
+    monkeypatch.setattr("xsignal.strategies.momentum_rotation_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "scan",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "scan123",
+            "--offline",
+            "--top-n",
+            "1,2",
+            "--fee-bps",
+            "5",
+            "--slippage-bps",
+            "1,2",
+            "--min-rolling-7d-quote-volume",
+            "0",
+        ]
+    )
+
+    scan_dir = tmp_path / "strategies" / "momentum_rotation_v1" / "scans" / "scan123"
+    rows = list(csv.DictReader((scan_dir / "summary.csv").open()))
+    manifest = json.loads((scan_dir / "manifest.json").read_text())
+    summary = json.loads((scan_dir / "summary.json").read_text())
+
+    assert exit_code == 0
+    assert len(prepare_calls) == 1
+    assert prepare_calls[0][0] == tmp_path
+    assert prepare_calls[0][2] is True
+    assert prepare_calls[0][3] is True
+    assert signal_min_volumes == [0.0]
+    assert [config.slippage_bps for config in backtest_configs] == [1.0, 2.0, 1.0, 2.0]
+    assert len(rows) == 4
+    assert rows[0]["scan_id"] == "scan123"
+    assert rows[0]["top_n"] == "1"
+    assert rows[0]["fee_bps"] == "5.0"
+    assert rows[0]["slippage_bps"] == "1.0"
+    assert float(rows[0]["final_equity"]) == 1.0101
+    assert manifest["git_commit"] == "abc123"
+    assert manifest["canonical_manifests"] == ["manifest.json"]
+    assert summary["combination_count"] == 4
+
+
+def test_cli_scan_passes_no_cache_to_canonical_preparation(tmp_path, monkeypatch):
+    arrays = PreparedArrays(
+        symbols=("BTCUSDT",),
+        rebalance_times=np.array(["2026-01-02", "2026-01-03"], dtype=object),
+        close_1h=np.array([[100.0], [101.0]]),
+        close_4h=np.array([[100.0], [101.0]]),
+        close_1d=np.array([[100.0], [101.0]]),
+        quote_volume_1d=np.ones((2, 1)),
+        complete_1h=np.ones((2, 1), dtype=bool),
+        complete_4h=np.ones((2, 1), dtype=bool),
+        complete_1d=np.ones((2, 1), dtype=bool),
+        quality_1h_24h=np.ones((2, 1), dtype=bool),
+        quality_4h_7d=np.ones((2, 1), dtype=bool),
+        quality_1d_30d=np.ones((2, 1), dtype=bool),
+    )
+    signals = SignalArrays(score=np.array([[1.0], [1.0]]), tradable_mask=np.ones((2, 1), dtype=bool))
+    calls = []
+
+    def fake_prepare(root, config, *, offline, use_cache):
+        calls.append((root, config, offline, use_cache))
+        return arrays, ["manifest.json"]
+
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.prepare_from_canonical",
+        fake_prepare,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.compute_momentum_signals",
+        lambda *_args, **_kwargs: signals,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.momentum_rotation_v1.cli.run_backtest",
+        lambda *_args, **_kwargs: BacktestResult(
+            equity=np.array([1.0, 1.01]),
+            period_returns=np.array([0.01]),
+            weights=np.array([[1.0], [1.0]]),
+            turnover=np.array([1.0, 0.0]),
+            costs=np.array([0.0, 0.0]),
+        ),
+    )
+    monkeypatch.setattr("xsignal.strategies.momentum_rotation_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "scan",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "scan-nocache",
+            "--top-n",
+            "1",
+            "--no-cache",
+        ]
     )
 
     assert exit_code == 0

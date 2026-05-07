@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import subprocess
 import time
 import uuid
 from pathlib import Path
 
-from xsignal.strategies.momentum_rotation_v1.artifacts import write_run_artifacts
+from xsignal.strategies.momentum_rotation_v1.artifacts import (
+    build_backtest_summary,
+    write_run_artifacts,
+    write_scan_artifacts,
+)
 from xsignal.strategies.momentum_rotation_v1.config import MomentumRotationConfig
 from xsignal.strategies.momentum_rotation_v1.data import (
     collect_offline_manifest_paths,
@@ -144,6 +149,24 @@ def prepare_from_canonical(
     return arrays, canonical_manifests
 
 
+def _parse_csv_values(value: str, caster, field_name: str) -> tuple:
+    try:
+        parsed = tuple(caster(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{field_name} must be a comma-separated list") from exc
+    if not parsed:
+        raise argparse.ArgumentTypeError(f"{field_name} must contain at least one value")
+    return parsed
+
+
+def _parse_int_grid(value: str) -> tuple[int, ...]:
+    return _parse_csv_values(value, int, "grid")
+
+
+def _parse_float_grid(value: str) -> tuple[float, ...]:
+    return _parse_csv_values(value, float, "grid")
+
+
 def _run_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     config = MomentumRotationConfig(
@@ -178,6 +201,82 @@ def _run_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _scan_configs(args: argparse.Namespace) -> list[MomentumRotationConfig]:
+    configs = []
+    for top_n, fee_bps, slippage_bps, min_volume in itertools.product(
+        args.top_n,
+        args.fee_bps,
+        args.slippage_bps,
+        args.min_rolling_7d_quote_volume,
+    ):
+        configs.append(
+            MomentumRotationConfig(
+                top_n=top_n,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+                min_rolling_7d_quote_volume=min_volume,
+            )
+        )
+    return configs
+
+
+def _signal_cache_key(config: MomentumRotationConfig) -> tuple[float, float, float, float, int, int, int]:
+    return (
+        config.min_rolling_7d_quote_volume,
+        config.short_return_weight,
+        config.medium_return_weight,
+        config.long_return_weight,
+        config.short_window_hours,
+        config.medium_window_days,
+        config.long_window_days,
+    )
+
+
+def _scan_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    configs = _scan_configs(args)
+    base_config = configs[0]
+    arrays, canonical_manifests = prepare_from_canonical(
+        Path(args.root),
+        base_config,
+        offline=args.offline,
+        use_cache=not args.no_cache,
+    )
+    scan_id = args.scan_id or uuid.uuid4().hex
+    rows = []
+    signal_cache = {}
+    for config in configs:
+        signal_key = _signal_cache_key(config)
+        signals = signal_cache.get(signal_key)
+        if signals is None:
+            signals = compute_momentum_signals(arrays, config)
+            signal_cache[signal_key] = signals
+        result = run_backtest(arrays, signals, config)
+        row = {
+            "scan_id": scan_id,
+            "config_hash": config.config_hash(),
+            "top_n": config.top_n,
+            "fee_bps": config.fee_bps,
+            "slippage_bps": config.slippage_bps,
+            "min_rolling_7d_quote_volume": config.min_rolling_7d_quote_volume,
+        }
+        row.update(build_backtest_summary(result))
+        rows.append(row)
+    runtime_seconds = time.perf_counter() - started
+    output = write_scan_artifacts(
+        paths=MomentumRotationPaths(root=Path(args.root)),
+        scan_id=scan_id,
+        base_config=base_config,
+        rows=rows,
+        canonical_manifests=canonical_manifests,
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        symbol_count=len(arrays.symbols),
+    )
+    print(output)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run momentum_rotation_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -199,6 +298,29 @@ def main(argv: list[str] | None = None) -> int:
         help="Rebuild prepared arrays even if a prepared cache entry exists",
     )
     run_parser.set_defaults(func=_run_command)
+
+    scan_parser = subparsers.add_parser("scan")
+    scan_parser.add_argument("--root", default="data")
+    scan_parser.add_argument("--scan-id")
+    scan_parser.add_argument("--top-n", type=_parse_int_grid, default=(10,))
+    scan_parser.add_argument("--fee-bps", type=_parse_float_grid, default=(5.0,))
+    scan_parser.add_argument("--slippage-bps", type=_parse_float_grid, default=(5.0,))
+    scan_parser.add_argument(
+        "--min-rolling-7d-quote-volume",
+        type=_parse_float_grid,
+        default=(0.0,),
+    )
+    scan_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Only read existing canonical Parquet manifests; never connect to ClickHouse or export",
+    )
+    scan_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Rebuild prepared arrays even if a prepared cache entry exists",
+    )
+    scan_parser.set_defaults(func=_scan_command)
     args = parser.parse_args(argv)
     args.func(args)
     return 0
