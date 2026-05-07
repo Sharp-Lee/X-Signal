@@ -43,6 +43,17 @@ def _slice_arrays(arrays: OhlcvArrays, mask: np.ndarray) -> OhlcvArrays:
     )
 
 
+def holdout_mask_for_open_times(open_times: np.ndarray, *, holdout_days: int) -> np.ndarray:
+    if holdout_days <= 0:
+        raise ValueError("holdout_days must be positive")
+    if len(open_times) == 0:
+        raise ValueError("cannot split empty OHLCV arrays")
+    last_time = _as_utc_datetime(open_times[-1])
+    holdout_start = last_time - timedelta(days=holdout_days)
+    times = np.array([_as_utc_datetime(value) for value in open_times], dtype=object)
+    return np.array([value >= holdout_start for value in times], dtype=bool)
+
+
 def split_research_and_holdout(
     arrays: OhlcvArrays,
     *,
@@ -62,11 +73,8 @@ def split_research_and_holdout(
     if len(arrays.open_times) == 0:
         raise ValueError("cannot split empty OHLCV arrays")
 
-    last_time = _as_utc_datetime(arrays.open_times[-1])
-    holdout_start = last_time - timedelta(days=holdout_days)
-    times = np.array([_as_utc_datetime(value) for value in arrays.open_times], dtype=object)
-    research_mask = np.array([value < holdout_start for value in times], dtype=bool)
-    holdout_mask = ~research_mask
+    holdout_mask = holdout_mask_for_open_times(arrays.open_times, holdout_days=holdout_days)
+    research_mask = ~holdout_mask
     if not research_mask.any():
         raise ValueError("holdout window leaves no research rows")
 
