@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 *.pyc
 /data/canonical_bars/
+/data/strategies/
 /data/tmp/
 /runs/
 *.egg-info/
