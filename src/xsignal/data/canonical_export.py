@@ -89,6 +89,20 @@ def _repair_catalog(catalog: Catalog, partition: Partition) -> None:
         catalog.mark_complete(manifest)
 
 
+def _manifest_quality_counts(parquet_path: Path) -> tuple[int, int]:
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    table = pq.ParquetFile(parquet_path).read(
+        columns=["synthetic_1m_count", "bar_count", "expected_1m_count"],
+    )
+    synthetic_total = pc.sum(table["synthetic_1m_count"]).as_py() or 0
+    incomplete_total = pc.sum(
+        pc.cast(pc.less(table["bar_count"], table["expected_1m_count"]), "int64")
+    ).as_py() or 0
+    return int(synthetic_total), int(incomplete_total)
+
+
 def ensure_canonical_bars(
     request: CanonicalRequest,
     paths: CanonicalPaths,
@@ -96,6 +110,9 @@ def ensure_canonical_bars(
     exporter: Exporter,
     now: Callable[[], datetime] | None = None,
 ) -> CanonicalDataset:
+    if paths.fill_policy != request.fill_policy:
+        raise ValueError("CanonicalPaths fill_policy must match request fill_policy")
+
     clock = now or (lambda: datetime.now(timezone.utc))
     catalog = Catalog(paths)
 
@@ -113,7 +130,12 @@ def ensure_canonical_bars(
 
             run_id = uuid.uuid4().hex
             start, end = partition_bounds(partition)
-            sql = build_aggregate_query(request.timeframe, start, end)
+            sql = build_aggregate_query(
+                request.timeframe,
+                start,
+                end,
+                fill_policy=request.fill_policy,
+            )
             temp_parquet = paths.temp_parquet_path(partition, run_id)
             try:
                 row_count = exporter.export(sql, temp_parquet)
@@ -129,18 +151,35 @@ def ensure_canonical_bars(
             except Exception:
                 temp_parquet.unlink(missing_ok=True)
                 raise
+            try:
+                synthetic_1m_count_total, incomplete_raw_bar_count = _manifest_quality_counts(
+                    target_parquet
+                )
+            except Exception as exc:
+                target_parquet.unlink(missing_ok=True)
+                raise ValueError("published parquet failed manifest validation") from exc
 
+            synthetic_generation_version = (
+                "none"
+                if request.fill_policy == "raw"
+                else "prev-close-zero-volume-v1"
+            )
             manifest = ExportManifest(
                 dataset_version=request.dataset_version,
                 source_table=CLICKHOUSE_SOURCE_TABLE,
                 timeframe=request.timeframe,
+                fill_policy=request.fill_policy,
                 partition_key=partition.key,
                 deduplication_mode="FINAL",
-                aggregation_semantics_version="ohlcv-v1",
+                aggregation_semantics_version="ohlcv-v2",
+                synthetic_generation_version=synthetic_generation_version,
                 query_hash=query_hash(sql),
                 row_count=row_count,
                 parquet_path=str(target_parquet),
                 exported_at=clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                synthetic_1m_count_total=synthetic_1m_count_total,
+                incomplete_raw_bar_count=incomplete_raw_bar_count,
+                symbol_bound_policy="observed_1m_bounds",
             )
             if (
                 catalog.status_for_manifest(partition, request.dataset_version, manifest)
@@ -209,8 +248,8 @@ class _LazyExporter:
 
 
 def _ensure_command(args: argparse.Namespace) -> CanonicalDataset:
-    request = CanonicalRequest(timeframe=args.timeframe)
-    paths = CanonicalPaths(root=Path(args.root))
+    request = CanonicalRequest(timeframe=args.timeframe, fill_policy=args.fill_policy)
+    paths = CanonicalPaths(root=Path(args.root), fill_policy=args.fill_policy)
     if args.year is None:
         if args.month is not None:
             raise ValueError("--month requires --year")
@@ -235,6 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ensure_parser = subparsers.add_parser("ensure")
     ensure_parser.add_argument("--timeframe", required=True)
     ensure_parser.add_argument("--root", default="data")
+    ensure_parser.add_argument("--fill-policy", default="raw")
     ensure_parser.add_argument("--year", type=int)
     ensure_parser.add_argument("--month", type=int)
     ensure_parser.set_defaults(func=_ensure_command)

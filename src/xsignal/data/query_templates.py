@@ -54,7 +54,7 @@ SELECT
     toUInt16(0) AS synthetic_1m_count,
     toUInt16({expected_count}) AS expected_1m_count,
     is_complete,
-    0 AS has_synthetic,
+    toUInt8(0) AS has_synthetic,
     'raw' AS fill_policy
 FROM
 (

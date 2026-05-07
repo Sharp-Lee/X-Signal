@@ -30,7 +30,7 @@ SELECT
     toUInt16(0) AS synthetic_1m_count,
     toUInt16(60) AS expected_1m_count,
     is_complete,
-    0 AS has_synthetic,
+    toUInt8(0) AS has_synthetic,
     'raw' AS fill_policy
 FROM
 (
@@ -102,7 +102,7 @@ def test_build_aggregate_query_uses_supported_intervals(timeframe, interval_sql,
     assert f"bar_count = {expected_count} AS is_complete" in sql
     assert f"toUInt16({expected_count}) AS expected_1m_count" in sql
     assert "toUInt16(0) AS synthetic_1m_count" in sql
-    assert "0 AS has_synthetic" in sql
+    assert "toUInt8(0) AS has_synthetic" in sql
     assert "'raw' AS fill_policy" in sql
     assert "argMin(open, k.open_time)" in sql
     assert "argMax(close, k.open_time)" in sql

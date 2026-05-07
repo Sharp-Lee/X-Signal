@@ -27,11 +27,23 @@ CANONICAL_COLUMNS = [
     "taker_buy_volume",
     "taker_buy_quote_volume",
     "bar_count",
+    "synthetic_1m_count",
+    "expected_1m_count",
     "is_complete",
+    "has_synthetic",
+    "fill_policy",
 ]
 
 
-def write_canonical_parquet(path: Path, row_count: int = 10) -> None:
+def write_canonical_parquet(
+    path: Path,
+    row_count: int = 10,
+    *,
+    fill_policy: str = "raw",
+    synthetic_1m_count: int = 0,
+    expected_1m_count: int = 60,
+    has_synthetic: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.table(
         {
@@ -47,7 +59,11 @@ def write_canonical_parquet(path: Path, row_count: int = 10) -> None:
             "taker_buy_volume": [50.0] * row_count,
             "taker_buy_quote_volume": [75.0] * row_count,
             "bar_count": [60] * row_count,
+            "synthetic_1m_count": [synthetic_1m_count] * row_count,
+            "expected_1m_count": [expected_1m_count] * row_count,
             "is_complete": [True] * row_count,
+            "has_synthetic": [has_synthetic] * row_count,
+            "fill_policy": [fill_policy] * row_count,
         }
     )
     pq.write_table(table.select(CANONICAL_COLUMNS), path)
@@ -77,18 +93,28 @@ def make_manifest(partition: Partition, parquet_path: Path, **overrides: object)
         "timeframe": partition.timeframe,
         "partition_key": partition.key,
         "deduplication_mode": "FINAL",
-        "aggregation_semantics_version": "ohlcv-v1",
+        "aggregation_semantics_version": "ohlcv-v2",
         "fill_policy": "raw",
         "synthetic_generation_version": "none",
         "synthetic_1m_count_total": 0,
         "incomplete_raw_bar_count": 0,
         "symbol_bound_policy": "observed_1m_bounds",
-        "query_hash": query_hash(build_aggregate_query(partition.timeframe, start, end)),
         "row_count": 10,
         "parquet_path": str(parquet_path),
         "exported_at": "2026-05-06T00:00:00Z",
     }
     payload.update(overrides)
+    payload.setdefault(
+        "query_hash",
+        query_hash(
+            build_aggregate_query(
+                partition.timeframe,
+                start,
+                end,
+                fill_policy=str(payload["fill_policy"]),
+            )
+        ),
+    )
     return ExportManifest(**payload)
 
 
@@ -163,6 +189,36 @@ def test_catalog_mark_complete_preserves_concurrent_partition_updates(tmp_path, 
         first_partition.key,
         second_partition.key,
     }
+
+
+def test_catalog_records_fill_policy_metadata_in_catalog_entry(tmp_path):
+    paths = CanonicalPaths(root=tmp_path)
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.parquet_path(partition)
+    write_canonical_parquet(parquet_path)
+    manifest = make_manifest(partition, parquet_path)
+    paths.manifest_path(partition).write_text(manifest.model_dump_json(indent=2))
+
+    catalog.mark_complete(manifest)
+
+    entry = json.loads(paths.catalog_path("1h").read_text())["partitions"][partition.key]
+    assert entry["fill_policy"] == "raw"
+    assert entry["synthetic_generation_version"] == "none"
+    assert entry["synthetic_1m_count_total"] == 0
+    assert entry["incomplete_raw_bar_count"] == 0
+
+
+def test_catalog_treats_fill_policy_mismatch_as_stale(tmp_path):
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+    catalog = Catalog(paths=paths)
+    partition = Partition(timeframe="1h", year=2026, month=5)
+    parquet_path = paths.published_parquet_path(partition, "abc123")
+    write_canonical_parquet(parquet_path)
+    manifest = make_manifest(partition, parquet_path, fill_policy="raw")
+    paths.manifest_path(partition).write_text(manifest.model_dump_json(indent=2))
+
+    assert catalog.status(partition, dataset_version="v1") == PartitionStatus.STALE
 
 
 def test_catalog_treats_wrong_source_table_as_stale(tmp_path):

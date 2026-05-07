@@ -30,7 +30,7 @@ SUPPORTED_TIMEFRAMES = set(FIXED_TIMEFRAME_SPECS)
 EXPECTED_1M_COUNTS = {name: spec.minutes for name, spec in FIXED_TIMEFRAME_SPECS.items()}
 FILL_POLICIES = {"raw", "prev_close_zero_volume"}
 FillPolicy = str
-CANONICAL_BAR_COLUMNS = (
+BASE_CANONICAL_BAR_COLUMNS = (
     "symbol",
     "open_time",
     "open",
@@ -43,8 +43,17 @@ CANONICAL_BAR_COLUMNS = (
     "taker_buy_volume",
     "taker_buy_quote_volume",
     "bar_count",
+    "synthetic_1m_count",
+    "expected_1m_count",
     "is_complete",
+    "has_synthetic",
+    "fill_policy",
 )
+CANONICAL_BAR_COLUMNS = BASE_CANONICAL_BAR_COLUMNS
+CANONICAL_BAR_COLUMNS_BY_FILL_POLICY = {
+    "raw": BASE_CANONICAL_BAR_COLUMNS,
+    "prev_close_zero_volume": BASE_CANONICAL_BAR_COLUMNS,
+}
 
 
 def validate_timeframe(timeframe: str) -> str:
@@ -68,6 +77,11 @@ def validate_fill_policy(fill_policy: str) -> str:
         supported = ", ".join(sorted(FILL_POLICIES))
         raise ValueError(f"Unsupported fill_policy {fill_policy!r}; supported: {supported}")
     return fill_policy
+
+
+def canonical_bar_columns(fill_policy: str) -> tuple[str, ...]:
+    fill_policy = validate_fill_policy(fill_policy)
+    return CANONICAL_BAR_COLUMNS_BY_FILL_POLICY[fill_policy]
 
 
 @dataclass(frozen=True)

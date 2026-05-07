@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from xsignal.data.canonical_bars import CANONICAL_BAR_COLUMNS, Partition, partition_bounds
+from xsignal.data.canonical_bars import Partition, canonical_bar_columns, partition_bounds
 from xsignal.data.locks import ExportLock, atomic_publish
 from xsignal.data.paths import CanonicalPaths
 from xsignal.data.query_templates import CLICKHOUSE_SOURCE_TABLE, build_aggregate_query, query_hash
@@ -68,10 +68,31 @@ class Catalog:
             return PartitionStatus.STALE
         if manifest.deduplication_mode != "FINAL":
             return PartitionStatus.STALE
-        if manifest.aggregation_semantics_version != "ohlcv-v1":
+        if manifest.aggregation_semantics_version != "ohlcv-v2":
+            return PartitionStatus.STALE
+        if manifest.fill_policy != self.paths.fill_policy:
+            return PartitionStatus.STALE
+        if manifest.fill_policy == "raw" and manifest.synthetic_generation_version != "none":
+            return PartitionStatus.STALE
+        if (
+            manifest.fill_policy == "prev_close_zero_volume"
+            and manifest.synthetic_generation_version != "prev-close-zero-volume-v1"
+        ):
+            return PartitionStatus.STALE
+        if manifest.synthetic_1m_count_total < 0 or manifest.incomplete_raw_bar_count < 0:
             return PartitionStatus.STALE
         start, end = partition_bounds(partition)
-        expected_query_hash = query_hash(build_aggregate_query(partition.timeframe, start, end))
+        try:
+            expected_query_hash = query_hash(
+                build_aggregate_query(
+                    partition.timeframe,
+                    start,
+                    end,
+                    fill_policy=manifest.fill_policy,
+                )
+            )
+        except (NotImplementedError, ValueError):
+            return PartitionStatus.STALE
         if manifest.query_hash != expected_query_hash:
             return PartitionStatus.STALE
         try:
@@ -82,7 +103,7 @@ class Catalog:
             return PartitionStatus.STALE
         if parquet_metadata.num_rows != manifest.row_count:
             return PartitionStatus.STALE
-        if tuple(parquet_metadata.schema.names) != CANONICAL_BAR_COLUMNS:
+        if tuple(parquet_metadata.schema.names) != canonical_bar_columns(manifest.fill_policy):
             return PartitionStatus.STALE
         return PartitionStatus.COMPLETE
 
@@ -93,13 +114,22 @@ class Catalog:
             if catalog_path.exists():
                 catalog = json.loads(catalog_path.read_text())
             else:
-                catalog = {"timeframe": manifest.timeframe, "partitions": {}}
+                catalog = {
+                    "timeframe": manifest.timeframe,
+                    "fill_policy": manifest.fill_policy,
+                    "partitions": {},
+                }
+            catalog.setdefault("fill_policy", manifest.fill_policy)
             entry = {
                 "dataset_version": manifest.dataset_version,
+                "fill_policy": manifest.fill_policy,
                 "row_count": manifest.row_count,
                 "query_hash": manifest.query_hash,
                 "parquet_path": manifest.parquet_path,
                 "exported_at": manifest.exported_at,
+                "synthetic_generation_version": manifest.synthetic_generation_version,
+                "synthetic_1m_count_total": manifest.synthetic_1m_count_total,
+                "incomplete_raw_bar_count": manifest.incomplete_raw_bar_count,
             }
             if catalog["partitions"].get(manifest.partition_key) == entry:
                 return

@@ -31,7 +31,11 @@ CANONICAL_COLUMNS = [
     "taker_buy_volume",
     "taker_buy_quote_volume",
     "bar_count",
+    "synthetic_1m_count",
+    "expected_1m_count",
     "is_complete",
+    "has_synthetic",
+    "fill_policy",
 ]
 
 
@@ -51,7 +55,11 @@ def write_canonical_parquet(path: Path, row_count: int) -> None:
             "taker_buy_volume": [50.0] * row_count,
             "taker_buy_quote_volume": [75.0] * row_count,
             "bar_count": [60] * row_count,
+            "synthetic_1m_count": [0] * row_count,
+            "expected_1m_count": [60] * row_count,
             "is_complete": [True] * row_count,
+            "has_synthetic": [False] * row_count,
+            "fill_policy": ["raw"] * row_count,
         }
     )
     pq.write_table(table.select(CANONICAL_COLUMNS), path)
@@ -115,6 +123,40 @@ def test_ensure_exports_missing_partition(tmp_path):
     assert paths.manifest_path(partition).exists()
     assert manifest_parquet_path(paths, partition).exists()
     assert result.partitions == [partition]
+
+
+def test_ensure_rejects_paths_fill_policy_mismatch(tmp_path):
+    exporter = FakeExporter()
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+    partition = Partition(timeframe="1h", year=2026, month=5)
+
+    with pytest.raises(ValueError, match="fill_policy"):
+        ensure_canonical_bars(
+            request=CanonicalRequest(timeframe="1h", fill_policy="raw"),
+            paths=paths,
+            partitions=[partition],
+            exporter=exporter,
+            now=lambda: datetime(2026, 5, 6, tzinfo=timezone.utc),
+        )
+
+    assert exporter.calls == []
+
+
+def test_ensure_passes_filled_policy_to_query_builder(tmp_path):
+    exporter = FakeExporter()
+    paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
+    partition = Partition(timeframe="1h", year=2026, month=5)
+
+    with pytest.raises(NotImplementedError, match="prev_close_zero_volume query is implemented in Task 4"):
+        ensure_canonical_bars(
+            request=CanonicalRequest(timeframe="1h", fill_policy="prev_close_zero_volume"),
+            paths=paths,
+            partitions=[partition],
+            exporter=exporter,
+            now=lambda: datetime(2026, 5, 6, tzinfo=timezone.utc),
+        )
+
+    assert exporter.calls == []
 
 
 def test_ensure_reuses_complete_partition(tmp_path):
