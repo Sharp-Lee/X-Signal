@@ -116,6 +116,21 @@ def test_build_regime_value_arrays_adds_causal_market_context_and_signal_feature
     assert values["move_unit"][3, 1] == 8.0
 
 
+def test_build_regime_value_arrays_adds_symbol_age_and_stop_distance_features():
+    arrays = _arrays()
+    arrays.quality[0, 1] = False
+    arrays.quality[1, 1] = False
+    values = build_regime_value_arrays(arrays, _features(), lookback_bars=2)
+
+    assert values["symbol_age_days"][0, 0] == 0.0
+    assert values["symbol_age_days"][3, 0] == pytest.approx(0.5)
+    assert np.isnan(values["symbol_age_days"][1, 1])
+    assert values["symbol_age_days"][2, 1] == 0.0
+    assert values["symbol_age_days"][3, 1] == pytest.approx(1 / 6)
+    assert values["signal_atr_pct"][3, 1] == pytest.approx(8.0 / 18.0)
+    assert values["signal_stop_distance_pct"][3, 1] == pytest.approx(2.0 * 8.0 / 18.0)
+
+
 def test_build_regime_value_arrays_adds_causal_bottom_and_contraction_features():
     values = build_regime_value_arrays(_arrays(), _features(), lookback_bars=2)
 
