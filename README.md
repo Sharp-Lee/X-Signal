@@ -49,3 +49,13 @@ The manifest is the atomic pointer to the immutable Parquet file for that
 partition.
 Raw and filled datasets are separate canonical identities and never satisfy
 each other's cache entries.
+
+Validate a raw canonical partition against Binance USD-M Futures:
+
+```bash
+python scripts/validate_binance_klines.py \
+  --manifest data/canonical_bars/timeframe=1h/fill_policy=raw/year=2020/month=02/manifest.json \
+  --symbol BTCUSDT \
+  --timeframe 1h \
+  --limit 10
+```
