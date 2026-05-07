@@ -206,6 +206,27 @@ Expected trailing scan outputs:
 - `summary.csv`
 - `top_configs.json`
 
+Diagnose a fixed trailing-stop config across research and holdout without using
+the diagnostic output for parameter selection:
+
+```bash
+xsignal-vpe-v1 trail-diagnose \
+  --root data \
+  --offline \
+  --diagnostic-id vpe-trailing-diagnostic \
+  --efficiency-percentile 0.9 \
+  --min-move-unit 1.2 \
+  --min-volume-unit 1.0 \
+  --min-close-position 0.94 \
+  --min-body-ratio 0.85
+```
+
+Expected diagnostic outputs:
+
+- `manifest.json`
+- `time_summary.parquet`
+- `bucket_summary.parquet`
+
 Run the trailing-stop production test on the reserved holdout window:
 
 ```bash

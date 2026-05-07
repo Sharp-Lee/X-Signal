@@ -41,6 +41,12 @@ from xsignal.strategies.volume_price_efficiency_v1.splits import (
 from xsignal.strategies.volume_price_efficiency_v1.trailing import (
     simulate_trailing_stop,
 )
+from xsignal.strategies.volume_price_efficiency_v1.trailing_diagnostics import (
+    build_trailing_bucket_summary_rows,
+    build_trailing_time_summary_rows,
+    enrich_trades_with_market_context,
+    write_trailing_diagnostic_artifacts,
+)
 from xsignal.strategies.volume_price_efficiency_v1.trailing_artifacts import (
     write_trailing_scan_artifacts,
     write_trailing_run_artifacts,
@@ -335,6 +341,103 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _trail_diagnose_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError("atr_multiplier must stay fixed at 2.0 for trail diagnostics")
+    config = VolumePriceEfficiencyConfig(
+        atr_window=args.atr_window,
+        volume_window=args.volume_window,
+        efficiency_lookback=args.efficiency_lookback,
+        efficiency_percentile=args.efficiency_percentile,
+        volume_floor=args.volume_floor,
+        min_move_unit=args.min_move_unit,
+        min_volume_unit=args.min_volume_unit,
+        min_close_position=args.min_close_position,
+        min_body_ratio=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    research_arrays, holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+    if holdout_arrays is None:
+        raise ValueError("trail-diagnose requires a positive holdout window")
+
+    research_base = compute_features(research_arrays, config)
+    research_features = replace(
+        research_base,
+        signal=build_signal_mask(research_arrays, research_base, config),
+    )
+    research_result = simulate_trailing_stop(
+        research_arrays,
+        research_features,
+        config,
+        atr_multiplier=args.atr_multiplier,
+    )
+
+    full_features = compute_features(arrays, config)
+    holdout_mask = holdout_mask_for_open_times(arrays.open_times, holdout_days=args.holdout_days)
+    holdout_features = FeatureArrays(
+        true_range=full_features.true_range[holdout_mask],
+        atr=full_features.atr[holdout_mask],
+        move_unit=full_features.move_unit[holdout_mask],
+        volume_baseline=full_features.volume_baseline[holdout_mask],
+        volume_unit=full_features.volume_unit[holdout_mask],
+        efficiency=full_features.efficiency[holdout_mask],
+        efficiency_threshold=full_features.efficiency_threshold[holdout_mask],
+        close_position=full_features.close_position[holdout_mask],
+        body_ratio=full_features.body_ratio[holdout_mask],
+        signal=full_features.signal[holdout_mask],
+    )
+    holdout_result = simulate_trailing_stop(
+        holdout_arrays,
+        holdout_features,
+        config,
+        atr_multiplier=args.atr_multiplier,
+    )
+
+    research_trades = enrich_trades_with_market_context(
+        research_result.trades,
+        research_arrays,
+        lookback_bars=args.lookback_bars,
+    )
+    holdout_trades = enrich_trades_with_market_context(
+        holdout_result.trades,
+        holdout_arrays,
+        lookback_bars=args.lookback_bars,
+    )
+    time_rows = [
+        *build_trailing_time_summary_rows(research_trades, data_set="research"),
+        *build_trailing_time_summary_rows(holdout_trades, data_set="holdout"),
+    ]
+    bucket_rows = [
+        *build_trailing_bucket_summary_rows(research_trades, data_set="research"),
+        *build_trailing_bucket_summary_rows(holdout_trades, data_set="holdout"),
+    ]
+    runtime_seconds = time.perf_counter() - started
+    diagnostic_id = args.diagnostic_id or uuid.uuid4().hex
+    output = write_trailing_diagnostic_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        diagnostic_id=diagnostic_id,
+        config=config,
+        time_rows=time_rows,
+        bucket_rows=bucket_rows,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+        lookback_bars=args.lookback_bars,
+    )
+    print(output)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run volume_price_efficiency_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -411,6 +514,27 @@ def main(argv: list[str] | None = None) -> int:
     trail_scan_parser.add_argument("--top-k", type=int, default=20)
     trail_scan_parser.add_argument("--min-trades", type=int, default=200)
     trail_scan_parser.set_defaults(func=_trail_scan_command)
+
+    trail_diagnose_parser = subparsers.add_parser("trail-diagnose")
+    trail_diagnose_parser.add_argument("--root", default="data")
+    trail_diagnose_parser.add_argument("--diagnostic-id")
+    trail_diagnose_parser.add_argument("--offline", action="store_true", required=True)
+    trail_diagnose_parser.add_argument("--atr-window", type=int, default=14)
+    trail_diagnose_parser.add_argument("--volume-window", type=int, default=60)
+    trail_diagnose_parser.add_argument("--efficiency-lookback", type=int, default=120)
+    trail_diagnose_parser.add_argument("--efficiency-percentile", type=float, default=0.90)
+    trail_diagnose_parser.add_argument("--volume-floor", type=float, default=0.2)
+    trail_diagnose_parser.add_argument("--min-move-unit", type=float, default=0.5)
+    trail_diagnose_parser.add_argument("--min-volume-unit", type=float, default=0.3)
+    trail_diagnose_parser.add_argument("--min-close-position", type=float, default=0.7)
+    trail_diagnose_parser.add_argument("--min-body-ratio", type=float, default=0.4)
+    trail_diagnose_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_diagnose_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_diagnose_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_diagnose_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_diagnose_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_diagnose_parser.add_argument("--lookback-bars", type=int, default=30)
+    trail_diagnose_parser.set_defaults(func=_trail_diagnose_command)
 
     args = parser.parse_args(argv)
     args.func(args)
