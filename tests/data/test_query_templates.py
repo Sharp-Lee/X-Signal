@@ -163,10 +163,16 @@ SELECT
 """.strip() in sql
     for fragment in [
         "raw_1m AS",
+        "symbol_bounds AS",
         "minute_grid AS",
-        "numbers(dateDiff('minute', start_time, end_time))",
+        "min(open_time) AS first_open_time",
+        "max(open_time) AS last_open_time",
+        "ARRAY JOIN range(toUInt64(dateDiff('minute', first_open_time, last_open_time) + 1))",
+        "addMinutes(first_open_time, toInt64(minute_offset)) AS minute_open_time",
         "previous_real_close",
-        "anyLast(r.close) OVER",
+        "toUInt8(1) AS is_real_row",
+        "r.is_real_row = 1 AS is_real_1m",
+        "anyLast(if(r.is_real_row = 1, r.close, NULL)) OVER",
         "toUInt16(sum(is_real_1m)) AS bar_count",
         "toUInt16(sum(is_synthetic_1m)) AS synthetic_1m_count",
         "60 AS expected_count",
@@ -177,6 +183,8 @@ SELECT
         "WHERE previous_real_close IS NOT NULL",
     ]:
         assert fragment in sql
+    assert "r.close IS NOT NULL AS is_real_1m" not in sql
+    assert "numbers(dateDiff('minute', start_time, end_time))" not in sql
 
 
 def test_build_aggregate_query_rejects_naive_datetime():

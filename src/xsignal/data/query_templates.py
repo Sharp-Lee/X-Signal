@@ -113,28 +113,28 @@ WITH
             quote_volume,
             trade_count,
             taker_buy_volume,
-            taker_buy_quote_volume
+            taker_buy_quote_volume,
+            toUInt8(1) AS is_real_row
         FROM {CLICKHOUSE_SOURCE_TABLE} AS k FINAL
         WHERE k.open_time >= start_time
           AND k.open_time < end_time
     ),
-    symbols AS
+    symbol_bounds AS
     (
-        SELECT DISTINCT symbol
+        SELECT
+            symbol,
+            min(open_time) AS first_open_time,
+            max(open_time) AS last_open_time
         FROM raw_1m
-    ),
-    minute_offsets AS
-    (
-        SELECT number AS minute_offset
-        FROM numbers(dateDiff('minute', start_time, end_time))
+        GROUP BY symbol
     ),
     minute_grid AS
     (
         SELECT
-            s.symbol,
-            addMinutes(start_time, toInt64(m.minute_offset)) AS minute_open_time
-        FROM symbols AS s
-        CROSS JOIN minute_offsets AS m
+            symbol,
+            addMinutes(first_open_time, toInt64(minute_offset)) AS minute_open_time
+        FROM symbol_bounds
+        ARRAY JOIN range(toUInt64(dateDiff('minute', first_open_time, last_open_time) + 1)) AS minute_offset
     )
 SELECT
     symbol,
@@ -185,8 +185,8 @@ FROM
             r.trade_count,
             r.taker_buy_volume,
             r.taker_buy_quote_volume,
-            r.close IS NOT NULL AS is_real_1m,
-            anyLast(r.close) OVER (
+            r.is_real_row = 1 AS is_real_1m,
+            anyLast(if(r.is_real_row = 1, r.close, NULL)) OVER (
                 PARTITION BY g.symbol
                 ORDER BY g.minute_open_time
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
