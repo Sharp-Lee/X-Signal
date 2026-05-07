@@ -45,6 +45,11 @@ def _safe_keep_rate(row: dict[str, Any]) -> float | None:
     return float(int(filtered) / int(base))
 
 
+def _score_or_none(row: dict[str, Any]) -> float | None:
+    value = row.get("score")
+    return None if value is None else float(value)
+
+
 def _rows_table(rows: list[dict[str, Any]]) -> pa.Table:
     if rows:
         return pa.Table.from_pylist(rows)
@@ -64,6 +69,73 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def build_regime_stability_summary(
+    segment_rows: list[dict[str, Any]],
+    *,
+    split_count: int,
+    min_trades: int,
+) -> dict[str, Any]:
+    if split_count <= 0:
+        raise ValueError("split_count must be positive")
+    if min_trades < 0:
+        raise ValueError("min_trades must be non-negative")
+
+    eligible_scores = [
+        score
+        for row in segment_rows
+        if int(row.get("trade_count") or 0) >= min_trades
+        for score in [_score_or_none(row)]
+        if score is not None
+    ]
+    mean_score = sum(eligible_scores) / len(eligible_scores) if eligible_scores else None
+    min_score = min(eligible_scores) if eligible_scores else None
+    return {
+        "selection_method": "train_stability",
+        "stability_split_count": split_count,
+        "stability_min_trades": min_trades,
+        "stability_evaluated_split_count": len(segment_rows),
+        "stability_eligible_split_count": len(eligible_scores),
+        "stability_positive_split_count": sum(score > 0.0 for score in eligible_scores),
+        "stability_mean_score": _rounded(mean_score),
+        "stability_min_score": _rounded(min_score),
+    }
+
+
+def select_stable_regime_filters(
+    rows: list[dict[str, Any]],
+    *,
+    top_k: int,
+    min_trades: int,
+    stability_min_positive_splits: int,
+) -> list[dict[str, Any]]:
+    if top_k <= 0:
+        return []
+    required_stable_splits = max(1, stability_min_positive_splits)
+    eligible = []
+    for row in rows:
+        if row.get("rule_id") == "unfiltered" or int(row.get("trade_count") or 0) < min_trades:
+            continue
+        split_count = int(row.get("stability_split_count") or 0)
+        eligible_split_count = int(row.get("stability_eligible_split_count") or 0)
+        positive_split_count = int(row.get("stability_positive_split_count") or 0)
+        if split_count <= 0 or eligible_split_count < required_stable_splits:
+            continue
+        if positive_split_count < required_stable_splits:
+            continue
+        if row.get("stability_min_score") is None or row.get("stability_mean_score") is None:
+            continue
+        eligible.append(row)
+    return sorted(
+        eligible,
+        key=lambda row: (
+            -(float(row["score"]) if row.get("score") is not None else float("-inf")),
+            -float(row["stability_mean_score"]),
+            -float(row["stability_min_score"]),
+            str(row["rule_id"]),
+        ),
+    )[:top_k]
 
 
 def build_regime_walk_forward_fold_row(
@@ -93,6 +165,7 @@ def build_regime_walk_forward_fold_row(
         "quantile": selected_rule.quantile if selected_rule is not None else None,
         "threshold": _rounded(selected_rule.threshold if selected_rule is not None else None),
         "threshold_source": "train_fold_signal_distribution",
+        "selection_method": train.get("selection_method", "train_total_score"),
         "train_score": _rounded(train.get("score")),
         "train_trade_count": train.get("trade_count"),
         "train_total_return": _rounded(train.get("total_return")),
@@ -100,6 +173,12 @@ def build_regime_walk_forward_fold_row(
         "train_base_signal_count": train.get("base_signal_count"),
         "train_filtered_signal_count": train.get("filtered_signal_count"),
         "train_signal_keep_rate": _rounded(_safe_keep_rate(train)),
+        "train_stability_split_count": train.get("stability_split_count"),
+        "train_stability_min_trades": train.get("stability_min_trades"),
+        "train_stability_eligible_split_count": train.get("stability_eligible_split_count"),
+        "train_stability_positive_split_count": train.get("stability_positive_split_count"),
+        "train_stability_mean_score": _rounded(train.get("stability_mean_score")),
+        "train_stability_min_score": _rounded(train.get("stability_min_score")),
         "validation_score": _rounded(validation.get("score")),
         "validation_trade_count": validation.get("trade_count"),
         "validation_win_rate": _rounded(validation.get("win_rate")),
@@ -150,6 +229,9 @@ def write_trailing_regime_walk_forward_artifacts(
     min_trades: int,
     quantiles: tuple[float, ...],
     feature_names: tuple[str, ...],
+    stability_splits: int = 1,
+    stability_min_trades: int = 0,
+    stability_min_positive_splits: int = 0,
 ) -> Path:
     output_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +251,10 @@ def write_trailing_regime_walk_forward_artifacts(
         "test_days": test_days,
         "step_days": step_days,
         "min_trades": min_trades,
+        "selection_method": "train_stability" if stability_splits > 1 else "train_total_score",
+        "stability_splits": stability_splits,
+        "stability_min_trades": stability_min_trades,
+        "stability_min_positive_splits": stability_min_positive_splits,
         "quantiles": list(quantiles),
         "feature_names": list(feature_names),
         "canonical_manifests": canonical_manifests,

@@ -848,6 +848,180 @@ def test_cli_trail_regime_walk_forward_uses_train_fold_thresholds(
     assert {row["threshold"] for row in selection_rows} == {3.5}
 
 
+def test_cli_trail_regime_walk_forward_can_select_by_train_stability(
+    tmp_path,
+    monkeypatch,
+):
+    all_arrays = _arrays(14)
+    research_arrays = _arrays(12)
+    holdout_arrays = _arrays(2)
+    captured = {"split": [], "simulate_signal_counts": [], "stable_select": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+
+    def fake_split(split_arrays, *, holdout_days):
+        captured["split"].append((split_arrays, holdout_days))
+        return (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-02T20:00:00Z",
+                "holdout_start": "2026-01-03T00:00:00Z",
+                "holdout_end": "2026-01-03T04:00:00Z",
+            },
+        )
+
+    values = np.zeros((12, 1), dtype=np.float64)
+    values[:12, 0] = [0.0, 1.0, 2.0, 5.0, 6.0, 0.0, 0.0, 4.0, 4.0, 4.0, 4.0, 0.0]
+    signal = np.zeros((12, 1), dtype=bool)
+    signal[[1, 2, 3, 4, 7, 8, 9, 10], 0] = True
+
+    def fake_features(row_count):
+        return FeatureArrays(
+            true_range=np.ones((row_count, 1), dtype=np.float64),
+            atr=np.ones((row_count, 1), dtype=np.float64),
+            move_unit=values[:row_count].copy(),
+            volume_baseline=np.ones((row_count, 1), dtype=np.float64),
+            volume_unit=np.ones((row_count, 1), dtype=np.float64),
+            efficiency=values[:row_count].copy(),
+            efficiency_threshold=np.zeros((row_count, 1), dtype=np.float64),
+            close_position=np.full((row_count, 1), 0.9),
+            body_ratio=np.full((row_count, 1), 0.9),
+            signal=signal[:row_count].copy(),
+        )
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        signal_count = int(np.count_nonzero(features.signal))
+        captured["simulate_signal_counts"].append(signal_count)
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        final_equity = 1.0 + signal_count / 100.0
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+                for _ in range(signal_count)
+            ],
+            equity=np.array([1.0, final_equity], dtype=np.float64),
+            period_returns=np.array([final_equity - 1.0], dtype=np.float64),
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    def fake_stable_select(rows, *, top_k, min_trades, stability_min_positive_splits):
+        captured["stable_select"].append(
+            {
+                "top_k": top_k,
+                "min_trades": min_trades,
+                "stability_min_positive_splits": stability_min_positive_splits,
+                "rule_ids": [row["rule_id"] for row in rows],
+                "split_counts": [row.get("stability_split_count") for row in rows],
+            }
+        )
+        return [rows[-1]]
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        fake_split,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        lambda feature_arrays, _config: fake_features(feature_arrays.open.shape[0]),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_signal_mask",
+        lambda _arrays, _features, _config: signal,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.select_stable_regime_filters",
+        fake_stable_select,
+        raising=False,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-walk-forward",
+            "--root",
+            str(tmp_path),
+            "--regime-walk-forward-id",
+            "stable-rwf",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--train-days",
+            "1",
+            "--test-days",
+            "1",
+            "--step-days",
+            "1",
+            "--feature-name",
+            "move_unit",
+            "--quantile",
+            "0.5",
+            "--min-trades",
+            "1",
+            "--top-k",
+            "1",
+            "--stability-splits",
+            "2",
+            "--stability-min-trades",
+            "1",
+            "--stability-min-positive-splits",
+            "2",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_regime_walk_forwards"
+        / "stable-rwf"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    fold_rows = pq.read_table(output_dir / "fold_summary.parquet").to_pylist()
+    selection_rows = pq.read_table(output_dir / "selection_summary.parquet").to_pylist()
+    assert exit_code == 0
+    assert captured["split"] == [(all_arrays, 7)]
+    assert captured["simulate_signal_counts"] == [2, 0, 2, 2, 2, 0, 0]
+    assert captured["stable_select"][0]["rule_ids"] == [
+        "move_unit_gte_p50",
+        "move_unit_lt_p50",
+    ]
+    assert captured["stable_select"][0]["split_counts"] == [2, 2]
+    assert captured["stable_select"][0]["stability_min_positive_splits"] == 2
+    assert manifest["selection_method"] == "train_stability"
+    assert manifest["stability_splits"] == 2
+    assert manifest["stability_min_trades"] == 1
+    assert manifest["stability_min_positive_splits"] == 2
+    assert fold_rows[0]["selection_method"] == "train_stability"
+    assert fold_rows[0]["rule_id"] == "move_unit_lt_p50"
+    assert fold_rows[0]["validation_filtered_signal_count"] == 0
+    assert {row["stability_split_count"] for row in selection_rows} == {2}
+
+
 def test_cli_trail_regime_walk_forward_uses_causal_contraction_feature_thresholds(
     tmp_path,
     monkeypatch,
