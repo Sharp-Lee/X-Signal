@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,50 @@ def _btc_lookback_return_matrix(
     return _broadcast_first_symbol_matrix(btc_returns, btc_index)
 
 
+def _open_time_seconds(value: object) -> float:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return float(value.timestamp())
+    if isinstance(value, date):
+        return float(datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp())
+    if isinstance(value, np.datetime64):
+        return float(value.astype("datetime64[s]").astype("int64"))
+    return float(value)
+
+
+def _symbol_age_days_matrix(arrays: OhlcvArrays) -> np.ndarray:
+    output = np.full(arrays.close.shape, np.nan, dtype=np.float64)
+    open_seconds = np.array(
+        [_open_time_seconds(value) for value in arrays.open_times],
+        dtype=np.float64,
+    )
+    for symbol_index in range(arrays.close.shape[1]):
+        valid = (
+            arrays.quality[:, symbol_index]
+            & np.isfinite(arrays.close[:, symbol_index])
+            & (arrays.close[:, symbol_index] > 0.0)
+        )
+        valid_indices = np.flatnonzero(valid)
+        if valid_indices.size == 0:
+            continue
+        first_index = int(valid_indices[0])
+        output[first_index:, symbol_index] = (
+            open_seconds[first_index:] - open_seconds[first_index]
+        ) / 86400.0
+    return output
+
+
+def _ratio_matrix(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+    valid = np.isfinite(numerator) & np.isfinite(denominator) & (denominator > 0.0)
+    return np.divide(
+        numerator,
+        denominator,
+        out=np.full(numerator.shape, np.nan, dtype=np.float64),
+        where=valid,
+    )
+
+
 def build_regime_value_arrays(
     arrays: OhlcvArrays,
     features: FeatureArrays,
@@ -211,11 +256,13 @@ def build_regime_value_arrays(
     else:
         btc_drawdown = _broadcast_first_symbol_matrix(symbol_drawdown, btc_index)
         btc_range_position = _broadcast_first_symbol_matrix(symbol_range_position, btc_index)
+    signal_atr_pct = _ratio_matrix(features.atr, arrays.close)
 
     return {
         "btc_lookback_return": _btc_lookback_return_matrix(arrays, lookback_bars),
         "market_lookback_return": _market_lookback_return_matrix(arrays.close, lookback_bars),
         "symbol_lookback_return": _lookback_return_matrix(arrays.close, lookback_bars),
+        "symbol_age_days": _symbol_age_days_matrix(arrays),
         "btc_drawdown_from_lookback_high": btc_drawdown,
         "market_drawdown_from_lookback_high": _broadcast_row_mean_matrix(symbol_drawdown),
         "symbol_drawdown_from_lookback_high": symbol_drawdown,
@@ -234,6 +281,8 @@ def build_regime_value_arrays(
             arrays.quote_volume,
             lookback_bars,
         ),
+        "signal_atr_pct": signal_atr_pct,
+        "signal_stop_distance_pct": 2.0 * signal_atr_pct,
         "signal_quote_volume": arrays.quote_volume,
         "efficiency": features.efficiency,
         "move_unit": features.move_unit,
