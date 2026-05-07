@@ -176,8 +176,31 @@ def collect_offline_strategy_inputs(
     root: Path,
     config: MomentumRotationConfig,
 ) -> StrategyCanonicalInputs:
-    paths = CanonicalPaths(root=root, fill_policy=config.fill_policy)
+    manifests = list(collect_offline_manifest_paths(root=root, config=config))
     loaded: dict[str, CanonicalBarTable] = {}
+    for timeframe in config.timeframes:
+        timeframe_manifests = [
+            path for path in manifests if f"timeframe={timeframe}" in path.parts
+        ]
+        loaded[timeframe] = _concat_manifested_tables(
+            timeframe_manifests,
+            timeframe=timeframe,
+            fill_policy=config.fill_policy,
+        )
+    return StrategyCanonicalInputs(
+        bars_1h=loaded["1h"],
+        bars_4h=loaded["4h"],
+        bars_1d=loaded["1d"],
+        manifest_paths=tuple(manifests),
+    )
+
+
+def collect_offline_manifest_paths(
+    *,
+    root: Path,
+    config: MomentumRotationConfig,
+) -> tuple[Path, ...]:
+    paths = CanonicalPaths(root=root, fill_policy=config.fill_policy)
     manifests: list[Path] = []
     missing_timeframes: list[str] = []
     for timeframe in config.timeframes:
@@ -186,20 +209,10 @@ def collect_offline_strategy_inputs(
             missing_timeframes.append(timeframe)
             continue
         manifests.extend(timeframe_manifests)
-        loaded[timeframe] = _concat_manifested_tables(
-            timeframe_manifests,
-            timeframe=timeframe,
-            fill_policy=config.fill_policy,
-        )
     if missing_timeframes:
         missing = ", ".join(missing_timeframes)
         raise ValueError(f"offline canonical manifests missing for timeframe(s): {missing}")
-    return StrategyCanonicalInputs(
-        bars_1h=loaded["1h"],
-        bars_4h=loaded["4h"],
-        bars_1d=loaded["1d"],
-        manifest_paths=tuple(manifests),
-    )
+    return tuple(manifests)
 
 
 def collect_strategy_inputs(
