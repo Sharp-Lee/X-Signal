@@ -8,9 +8,10 @@ from pathlib import Path
 
 from xsignal.strategies.momentum_rotation_v1.artifacts import write_run_artifacts
 from xsignal.strategies.momentum_rotation_v1.config import MomentumRotationConfig
+from xsignal.strategies.momentum_rotation_v1.data import collect_strategy_inputs
 from xsignal.strategies.momentum_rotation_v1.kernel import run_backtest
 from xsignal.strategies.momentum_rotation_v1.paths import MomentumRotationPaths
-from xsignal.strategies.momentum_rotation_v1.prepare import PreparedArrays
+from xsignal.strategies.momentum_rotation_v1.prepare import PreparedArrays, prepare_daily_arrays
 from xsignal.strategies.momentum_rotation_v1.signals import compute_momentum_signals
 
 
@@ -22,7 +23,13 @@ def _git_commit() -> str:
 
 
 def prepare_from_canonical(root: Path, config: MomentumRotationConfig) -> tuple[PreparedArrays, list[str]]:
-    raise RuntimeError("canonical preparation is not connected")
+    inputs = collect_strategy_inputs(root=root, config=config)
+    arrays = prepare_daily_arrays(
+        bars_1h=inputs.bars_1h,
+        bars_4h=inputs.bars_4h,
+        bars_1d=inputs.bars_1d,
+    )
+    return arrays, [str(path) for path in inputs.manifest_paths]
 
 
 def _run_command(args: argparse.Namespace) -> Path:
