@@ -145,3 +145,25 @@ The selection file includes the chosen parameters and a ready-to-run holdout
 command for the reserved production-test window. Hard filters are applied before
 scoring, so unacceptable drawdown, missing-price exposure, or too-short research
 windows are excluded instead of merely penalized.
+
+## Volume Price Efficiency V1
+
+Run the 4h volume-price-efficiency event study in fully offline mode:
+
+```bash
+xsignal-vpe-v1 run --root data --offline --run-id smoke-vpe-v1
+```
+
+The event study consumes canonical `4h` raw bars, detects unusually efficient
+upward candles, samples matched non-signal baseline candles, and writes:
+
+```text
+data/strategies/volume_price_efficiency_v1/runs/<run_id>/
+```
+
+Expected outputs:
+
+- `manifest.json`
+- `summary.json`
+- `events.parquet`
+- `baseline_events.parquet`

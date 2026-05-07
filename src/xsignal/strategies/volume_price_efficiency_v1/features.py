@@ -28,16 +28,13 @@ def _window_stat(values: np.ndarray, end_index: int, window: int, reducer) -> np
     start_index = end_index - window
     if start_index < 0:
         return np.full(values.shape[1], np.nan, dtype=np.float64)
-    return reducer(values[start_index:end_index], axis=0)
-
-
-def _nanpercentile_by_column(values: np.ndarray, percentile: float) -> np.ndarray:
+    window_values = values[start_index:end_index]
     result = np.full(values.shape[1], np.nan, dtype=np.float64)
     for column_index in range(values.shape[1]):
-        column = values[:, column_index]
+        column = window_values[:, column_index]
         finite = column[np.isfinite(column)]
         if finite.size:
-            result[column_index] = np.percentile(finite, percentile)
+            result[column_index] = reducer(finite)
     return result
 
 
@@ -65,23 +62,23 @@ def compute_features(
         true_range[index] = np.maximum.reduce([high_low[index], high_gap, low_gap])
 
     for index in range(shape[0]):
-        atr_start = index - config.atr_window + 1
-        if atr_start >= 0:
-            atr[index] = np.nanmean(true_range[atr_start : index + 1], axis=0)
+        atr[index] = _window_stat(
+            true_range,
+            index + 1,
+            config.atr_window,
+            np.mean,
+        )
         volume_baseline[index] = _window_stat(
             arrays.quote_volume,
             index,
             config.volume_window,
-            np.nanmedian,
+            np.median,
         )
         efficiency_threshold[index] = _window_stat(
             efficiency,
             index,
             config.efficiency_lookback,
-            lambda values, axis: _nanpercentile_by_column(
-                values,
-                config.efficiency_percentile * 100,
-            ),
+            lambda values: np.percentile(values, config.efficiency_percentile * 100),
         )
 
         range_ = arrays.high[index] - arrays.low[index]

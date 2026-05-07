@@ -75,4 +75,3 @@ class VolumePriceEfficiencyConfig(BaseModel):
     def config_hash(self) -> str:
         payload = self.model_dump_json(exclude_none=False)
         return hashlib.sha256(payload.encode()).hexdigest()
-

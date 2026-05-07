@@ -63,4 +63,3 @@ def test_config_rejects_invalid_values():
     for kwargs in invalid_kwargs:
         with pytest.raises(ValueError):
             VolumePriceEfficiencyConfig(**kwargs)
-
