@@ -40,6 +40,10 @@ class VolumePriceEfficiencyPaths:
     def trailing_diagnostics(self) -> Path:
         return self.base / "trailing_diagnostics"
 
+    @property
+    def trailing_walk_forwards(self) -> Path:
+        return self.base / "trailing_walk_forwards"
+
     def run_dir(self, run_id: str) -> Path:
         return self.runs / _validate_plain_id(run_id, "run_id")
 
@@ -54,3 +58,9 @@ class VolumePriceEfficiencyPaths:
 
     def trailing_diagnostic_dir(self, diagnostic_id: str) -> Path:
         return self.trailing_diagnostics / _validate_plain_id(diagnostic_id, "diagnostic_id")
+
+    def trailing_walk_forward_dir(self, walk_forward_id: str) -> Path:
+        return self.trailing_walk_forwards / _validate_plain_id(
+            walk_forward_id,
+            "walk_forward_id",
+        )

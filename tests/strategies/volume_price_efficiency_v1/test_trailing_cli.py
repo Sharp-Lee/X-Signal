@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from xsignal.strategies.volume_price_efficiency_v1.cli import main
 from xsignal.strategies.volume_price_efficiency_v1.data import (
@@ -426,3 +427,145 @@ def test_cli_trail_diagnose_refuses_non_offline_mode(tmp_path):
         assert exc.code == 2
     else:
         raise AssertionError("non-offline trail-diagnose should fail")
+
+
+def test_cli_trail_walk_forward_uses_research_only_prior_train_windows(
+    tmp_path,
+    monkeypatch,
+):
+    all_arrays = _arrays(14)
+    research_arrays = _arrays(12)
+    holdout_arrays = _arrays(2)
+    captured = {"split": [], "feature_shapes": [], "simulate_shapes": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+
+    def fake_split(split_arrays, *, holdout_days):
+        captured["split"].append((split_arrays, holdout_days))
+        return (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-02T20:00:00Z",
+                "holdout_start": "2026-01-03T00:00:00Z",
+                "holdout_end": "2026-01-03T04:00:00Z",
+            },
+        )
+
+    def fake_compute_features(feature_arrays, _config):
+        captured["feature_shapes"].append(feature_arrays.open.shape)
+        return _features(feature_arrays.open.shape[0])
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        captured["simulate_shapes"].append(sim_arrays.open.shape)
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        trade_count = 2 if config.efficiency_percentile == 0.9 else 1
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "signal_open_time": sim_arrays.open_times[0].isoformat(),
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                    "move_unit": 1.2,
+                }
+                for _ in range(trade_count)
+            ],
+            equity=np.array([1.0, 1.04 + trade_count / 100.0], dtype=np.float64),
+            period_returns=np.array([0.04], dtype=np.float64),
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        fake_split,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        fake_compute_features,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-walk-forward",
+            "--root",
+            str(tmp_path),
+            "--walk-forward-id",
+            "wf",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--train-days",
+            "1",
+            "--test-days",
+            "1",
+            "--step-days",
+            "1",
+            "--efficiency-percentile",
+            "0.9,0.95",
+            "--min-move-unit",
+            "1.2",
+            "--min-volume-unit",
+            "1.0",
+            "--min-close-position",
+            "0.94",
+            "--min-body-ratio",
+            "0.85",
+            "--min-trades",
+            "1",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_walk_forwards"
+        / "wf"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    fold_summary = pq.read_table(output_dir / "fold_summary.parquet").to_pylist()
+    selection_summary = pq.read_table(output_dir / "selection_summary.parquet").to_pylist()
+    assert exit_code == 0
+    assert captured["split"] == [(all_arrays, 7)]
+    assert captured["feature_shapes"] == [((12, 1)), ((12, 1))]
+    assert captured["simulate_shapes"] == [((6, 1)), ((6, 1)), ((6, 1))]
+    assert manifest["run_type"] == "trailing_stop_research_walk_forward"
+    assert manifest["data_scope"] == "research_only"
+    assert manifest["data_split"]["holdout_days"] == 7
+    assert manifest["train_days"] == 1
+    assert manifest["test_days"] == 1
+    assert manifest["fold_count"] == 1
+    assert len(fold_summary) == 1
+    assert len(selection_summary) == 2
+    assert fold_summary[0]["selected_config_hash"] == selection_summary[0]["config_hash"]
+
+
+def test_cli_trail_walk_forward_refuses_non_offline_mode(tmp_path):
+    try:
+        main(["trail-walk-forward", "--root", str(tmp_path), "--walk-forward-id", "online"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("non-offline trail-walk-forward should fail")
