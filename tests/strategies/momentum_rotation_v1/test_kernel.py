@@ -33,6 +33,30 @@ def arrays() -> PreparedArrays:
     )
 
 
+def arrays_with_unweighted_nan_returns() -> PreparedArrays:
+    close = np.array(
+        [
+            [100.0, np.nan],
+            [110.0, np.nan],
+            [121.0, np.nan],
+        ]
+    )
+    return PreparedArrays(
+        symbols=("BTCUSDT", "NEWUSDT"),
+        rebalance_times=np.array([0, 1, 2], dtype=object),
+        close_1h=close,
+        close_4h=close,
+        close_1d=close,
+        quote_volume_1d=np.ones_like(close),
+        complete_1h=np.array([[True, False], [True, False], [True, False]]),
+        complete_4h=np.array([[True, False], [True, False], [True, False]]),
+        complete_1d=np.array([[True, False], [True, False], [True, False]]),
+        quality_1h_24h=np.array([[True, False], [True, False], [True, False]]),
+        quality_4h_7d=np.array([[True, False], [True, False], [True, False]]),
+        quality_1d_30d=np.array([[True, False], [True, False], [True, False]]),
+    )
+
+
 def test_run_backtest_uses_weights_on_next_period_returns():
     signal = SignalArrays(
         score=np.array(
@@ -54,6 +78,22 @@ def test_run_backtest_uses_weights_on_next_period_returns():
     assert result.weights[0].tolist() == [1.0, 0.0, 0.0]
     assert result.period_returns.tolist() == pytest.approx([0.1, -0.1])
     assert result.equity.tolist() == pytest.approx([1.0, 1.1, 0.99])
+
+
+def test_run_backtest_ignores_nan_returns_for_unweighted_symbols():
+    signal = SignalArrays(
+        score=np.array([[1.0, np.nan], [1.0, np.nan], [1.0, np.nan]]),
+        tradable_mask=np.array([[True, False], [True, False], [True, False]]),
+    )
+
+    result = run_backtest(
+        arrays_with_unweighted_nan_returns(),
+        signal,
+        MomentumRotationConfig(top_n=1, fee_bps=0, slippage_bps=0),
+    )
+
+    assert result.period_returns.tolist() == pytest.approx([0.1, 0.1])
+    assert result.equity.tolist() == pytest.approx([1.0, 1.1, 1.21])
 
 
 def test_run_backtest_applies_turnover_costs():
