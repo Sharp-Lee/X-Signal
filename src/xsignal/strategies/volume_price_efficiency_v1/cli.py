@@ -55,6 +55,13 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_scan import (
     build_trailing_scan_row,
     select_top_trailing_configs,
 )
+from xsignal.strategies.volume_price_efficiency_v1.trailing_walk_forward import (
+    build_walk_forward_fold_row,
+    build_walk_forward_folds,
+    slice_feature_arrays,
+    slice_ohlcv_arrays,
+    write_trailing_walk_forward_artifacts,
+)
 
 
 def _git_commit() -> str:
@@ -438,6 +445,178 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _feature_cache_key(config: VolumePriceEfficiencyConfig) -> tuple[int, int, int, float, float]:
+    return (
+        config.atr_window,
+        config.volume_window,
+        config.efficiency_lookback,
+        config.efficiency_percentile,
+        config.volume_floor,
+    )
+
+
+def _signal_features(
+    arrays,
+    config: VolumePriceEfficiencyConfig,
+    feature_cache: dict[tuple[int, int, int, float, float], FeatureArrays],
+) -> FeatureArrays:
+    feature_key = _feature_cache_key(config)
+    cached_features = feature_cache.get(feature_key)
+    if cached_features is None:
+        cached_features = compute_features(arrays, config)
+        feature_cache[feature_key] = cached_features
+    return replace(
+        cached_features,
+        signal=build_signal_mask(arrays, cached_features, config),
+    )
+
+
+def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError("atr_multiplier must stay fixed at 2.0 for research trail-walk-forward")
+    configs = build_scan_configs(
+        efficiency_percentiles=args.efficiency_percentile,
+        min_move_units=args.min_move_unit,
+        min_volume_units=args.min_volume_unit,
+        min_close_positions=args.min_close_position,
+        min_body_ratios=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    base_config = configs[0]
+    config_by_hash = {config.config_hash(): config for config in configs}
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=base_config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    research_arrays, _holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+    folds = build_walk_forward_folds(
+        research_arrays.open_times,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days,
+    )
+
+    walk_forward_id = args.walk_forward_id or uuid.uuid4().hex
+    fold_rows = []
+    selection_rows = []
+    selected_train_rows = []
+    research_feature_cache: dict[tuple[int, int, int, float, float], FeatureArrays] = {}
+    research_signal_cache: dict[str, FeatureArrays] = {}
+    for fold_index, fold in enumerate(folds):
+        train_arrays = slice_ohlcv_arrays(research_arrays, fold.train_indices)
+        train_rows = []
+        for config in configs:
+            features = research_signal_cache.get(config.config_hash())
+            if features is None:
+                features = _signal_features(research_arrays, config, research_feature_cache)
+                research_signal_cache[config.config_hash()] = features
+            train_features = slice_feature_arrays(features, fold.train_indices)
+            result = simulate_trailing_stop(
+                train_arrays,
+                train_features,
+                config,
+                atr_multiplier=args.atr_multiplier,
+            )
+            row = build_trailing_scan_row(
+                scan_id=walk_forward_id,
+                config=config,
+                result=result,
+                symbols=train_arrays.symbols,
+                atr_multiplier=args.atr_multiplier,
+            )
+            row.update(
+                {
+                    "walk_forward_id": walk_forward_id,
+                    "fold_index": fold_index,
+                    "train_start": fold.train_start.isoformat(),
+                    "train_end": fold.train_end.isoformat(),
+                    "test_start": fold.test_start.isoformat(),
+                    "test_end": fold.test_end.isoformat(),
+                    "is_selected": False,
+                }
+            )
+            train_rows.append(row)
+
+        selected = select_top_trailing_configs(
+            train_rows,
+            top_k=1,
+            min_trades=args.min_trades,
+        )
+        selected_train_row = selected[0] if selected else None
+        selected_config = None
+        validation_row = None
+        if selected_train_row is not None:
+            selected_train_row["is_selected"] = True
+            selected_train_rows.append(selected_train_row)
+            selected_config = config_by_hash[str(selected_train_row["config_hash"])]
+            selected_features = research_signal_cache.get(selected_config.config_hash())
+            if selected_features is None:
+                selected_features = _signal_features(
+                    research_arrays,
+                    selected_config,
+                    research_feature_cache,
+                )
+                research_signal_cache[selected_config.config_hash()] = selected_features
+            validation_arrays = slice_ohlcv_arrays(research_arrays, fold.test_indices)
+            validation_features = slice_feature_arrays(selected_features, fold.test_indices)
+            validation_result = simulate_trailing_stop(
+                validation_arrays,
+                validation_features,
+                selected_config,
+                atr_multiplier=args.atr_multiplier,
+            )
+            validation_row = build_trailing_scan_row(
+                scan_id=walk_forward_id,
+                config=selected_config,
+                result=validation_result,
+                symbols=validation_arrays.symbols,
+                atr_multiplier=args.atr_multiplier,
+            )
+
+        selection_rows.extend(train_rows)
+        fold_rows.append(
+            build_walk_forward_fold_row(
+                walk_forward_id=walk_forward_id,
+                fold_index=fold_index,
+                fold=fold,
+                selected_train_row=selected_train_row,
+                validation_row=validation_row,
+                selected_config=selected_config,
+            )
+        )
+
+    top_configs = select_top_trailing_configs(
+        selected_train_rows,
+        top_k=args.top_k,
+        min_trades=args.min_trades,
+    )
+    runtime_seconds = time.perf_counter() - started
+    output = write_trailing_walk_forward_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        walk_forward_id=walk_forward_id,
+        base_config=base_config,
+        fold_rows=fold_rows,
+        selection_rows=selection_rows,
+        top_configs=top_configs,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        symbol_count=len(research_arrays.symbols),
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days,
+        min_trades=args.min_trades,
+    )
+    print(output)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run volume_price_efficiency_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -535,6 +714,35 @@ def main(argv: list[str] | None = None) -> int:
     trail_diagnose_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     trail_diagnose_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_diagnose_parser.set_defaults(func=_trail_diagnose_command)
+
+    trail_walk_forward_parser = subparsers.add_parser("trail-walk-forward")
+    trail_walk_forward_parser.add_argument("--root", default="data")
+    trail_walk_forward_parser.add_argument("--walk-forward-id")
+    trail_walk_forward_parser.add_argument("--offline", action="store_true", required=True)
+    trail_walk_forward_parser.add_argument(
+        "--efficiency-percentile",
+        type=_parse_float_grid,
+        default=(0.90, 0.95),
+    )
+    trail_walk_forward_parser.add_argument("--min-move-unit", type=_parse_float_grid, default=(0.5, 0.8))
+    trail_walk_forward_parser.add_argument("--min-volume-unit", type=_parse_float_grid, default=(0.3,))
+    trail_walk_forward_parser.add_argument(
+        "--min-close-position",
+        type=_parse_float_grid,
+        default=(0.7, 0.8),
+    )
+    trail_walk_forward_parser.add_argument("--min-body-ratio", type=_parse_float_grid, default=(0.4,))
+    trail_walk_forward_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_walk_forward_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_walk_forward_parser.add_argument("--train-days", type=int, default=720)
+    trail_walk_forward_parser.add_argument("--test-days", type=int, default=90)
+    trail_walk_forward_parser.add_argument("--step-days", type=int, default=90)
+    trail_walk_forward_parser.add_argument("--top-k", type=int, default=20)
+    trail_walk_forward_parser.add_argument("--min-trades", type=int, default=200)
+    trail_walk_forward_parser.set_defaults(func=_trail_walk_forward_command)
 
     args = parser.parse_args(argv)
     args.func(args)
