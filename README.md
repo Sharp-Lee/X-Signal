@@ -59,3 +59,24 @@ python scripts/validate_binance_klines.py \
   --timeframe 1h \
   --limit 10
 ```
+
+## Momentum Rotation V1
+
+Run the first strategy-specific backtest:
+
+```bash
+xsignal-momentum-v1 run --root data --top-n 10 --fee-bps 5 --slippage-bps 5
+```
+
+The strategy consumes canonical `1h`, `4h`, and `1d` raw bars, prepares dense arrays, computes a multi-timeframe momentum score, and writes outputs under:
+
+```text
+data/strategies/momentum_rotation_v1/runs/<run_id>/
+```
+
+Expected outputs:
+
+- `manifest.json`
+- `summary.json`
+- `equity_curve.parquet`
+- `daily_positions.parquet`
