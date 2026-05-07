@@ -167,3 +167,24 @@ Expected outputs:
 - `summary.json`
 - `events.parquet`
 - `baseline_events.parquet`
+
+Scan a compact research-only parameter grid and reserve the latest 180 days as
+holdout:
+
+```bash
+xsignal-vpe-v1 scan --root data --offline --scan-id smoke-vpe-scan
+```
+
+The scan excludes holdout rows from all parameter rankings and writes:
+
+```text
+data/strategies/volume_price_efficiency_v1/scans/<scan_id>/
+```
+
+Expected scan outputs:
+
+- `manifest.json`
+- `summary.json`
+- `summary.csv`
+- `top_configs.json`
+- `bucket_summary.parquet`
