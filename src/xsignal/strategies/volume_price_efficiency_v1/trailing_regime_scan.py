@@ -104,6 +104,78 @@ def _market_lookback_return_matrix(close: np.ndarray, lookback_bars: int) -> np.
     return output
 
 
+def _lookback_high_low_position_matrix(
+    close: np.ndarray,
+    lookback_bars: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    drawdown = np.full(close.shape, np.nan, dtype=np.float64)
+    position = np.full(close.shape, np.nan, dtype=np.float64)
+    for index in range(lookback_bars, close.shape[0]):
+        window = close[index - lookback_bars : index + 1]
+        finite = np.isfinite(window)
+        if not np.any(finite):
+            continue
+        high = np.where(finite, window, -np.inf).max(axis=0)
+        low = np.where(finite, window, np.inf).min(axis=0)
+        current = close[index]
+        valid_high = np.isfinite(high) & np.isfinite(current) & (high > 0.0)
+        valid_range = np.isfinite(high) & np.isfinite(low) & (high > low)
+        drawdown[index] = np.divide(
+            current,
+            high,
+            out=np.full(close.shape[1], np.nan, dtype=np.float64),
+            where=valid_high,
+        ) - 1.0
+        position[index] = np.divide(
+            current - low,
+            high - low,
+            out=np.full(close.shape[1], np.nan, dtype=np.float64),
+            where=valid_range,
+        )
+    return drawdown, position
+
+
+def _lagged_ratio_to_rolling_median_matrix(values: np.ndarray, lookback_bars: int) -> np.ndarray:
+    output = np.full(values.shape, np.nan, dtype=np.float64)
+    for index in range(lookback_bars, values.shape[0]):
+        current = values[index - 1]
+        window = values[index - lookback_bars : index]
+        median = np.full(values.shape[1], np.nan, dtype=np.float64)
+        for column_index in range(values.shape[1]):
+            column = window[:, column_index]
+            finite = column[np.isfinite(column)]
+            if finite.size:
+                median[column_index] = float(np.median(finite))
+        valid = np.isfinite(current) & np.isfinite(median) & (median > 0.0)
+        output[index] = np.divide(
+            current,
+            median,
+            out=np.full(values.shape[1], np.nan, dtype=np.float64),
+            where=valid,
+        )
+    return output
+
+
+def _broadcast_row_mean_matrix(values: np.ndarray) -> np.ndarray:
+    output = np.full(values.shape, np.nan, dtype=np.float64)
+    for index in range(values.shape[0]):
+        row = values[index]
+        finite = row[np.isfinite(row)]
+        if finite.size:
+            output[index] = float(np.mean(finite))
+    return output
+
+
+def _broadcast_first_symbol_matrix(values: np.ndarray, symbol_index: int) -> np.ndarray:
+    output = np.full(values.shape, np.nan, dtype=np.float64)
+    column = values[:, symbol_index : symbol_index + 1]
+    for index in range(values.shape[0]):
+        value = column[index, 0]
+        if np.isfinite(value):
+            output[index] = float(value)
+    return output
+
+
 def _btc_lookback_return_matrix(
     arrays: OhlcvArrays,
     lookback_bars: int,
@@ -115,12 +187,8 @@ def _btc_lookback_return_matrix(
         btc_index = arrays.symbols.index(btc_symbol)
     except ValueError:
         return output
-    btc_returns = _lookback_return_matrix(arrays.close[:, btc_index : btc_index + 1], lookback_bars)
-    for index in range(arrays.close.shape[0]):
-        value = btc_returns[index, 0]
-        if np.isfinite(value):
-            output[index] = float(value)
-    return output
+    btc_returns = _lookback_return_matrix(arrays.close, lookback_bars)
+    return _broadcast_first_symbol_matrix(btc_returns, btc_index)
 
 
 def build_regime_value_arrays(
@@ -131,10 +199,41 @@ def build_regime_value_arrays(
 ) -> dict[str, np.ndarray]:
     if lookback_bars <= 0:
         raise ValueError("lookback_bars must be positive")
+    symbol_drawdown, symbol_range_position = _lookback_high_low_position_matrix(
+        arrays.close,
+        lookback_bars,
+    )
+    try:
+        btc_index = arrays.symbols.index("BTCUSDT")
+    except ValueError:
+        btc_drawdown = np.full(arrays.close.shape, np.nan, dtype=np.float64)
+        btc_range_position = np.full(arrays.close.shape, np.nan, dtype=np.float64)
+    else:
+        btc_drawdown = _broadcast_first_symbol_matrix(symbol_drawdown, btc_index)
+        btc_range_position = _broadcast_first_symbol_matrix(symbol_range_position, btc_index)
+
     return {
         "btc_lookback_return": _btc_lookback_return_matrix(arrays, lookback_bars),
         "market_lookback_return": _market_lookback_return_matrix(arrays.close, lookback_bars),
         "symbol_lookback_return": _lookback_return_matrix(arrays.close, lookback_bars),
+        "btc_drawdown_from_lookback_high": btc_drawdown,
+        "market_drawdown_from_lookback_high": _broadcast_row_mean_matrix(symbol_drawdown),
+        "symbol_drawdown_from_lookback_high": symbol_drawdown,
+        "btc_range_position": btc_range_position,
+        "market_range_position": _broadcast_row_mean_matrix(symbol_range_position),
+        "symbol_range_position": symbol_range_position,
+        "pre_signal_atr_contraction": _lagged_ratio_to_rolling_median_matrix(
+            features.atr,
+            lookback_bars,
+        ),
+        "pre_signal_true_range_contraction": _lagged_ratio_to_rolling_median_matrix(
+            features.true_range,
+            lookback_bars,
+        ),
+        "pre_signal_volume_contraction": _lagged_ratio_to_rolling_median_matrix(
+            arrays.quote_volume,
+            lookback_bars,
+        ),
         "signal_quote_volume": arrays.quote_volume,
         "efficiency": features.efficiency,
         "move_unit": features.move_unit,

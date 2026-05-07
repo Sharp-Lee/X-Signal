@@ -116,6 +116,27 @@ def test_build_regime_value_arrays_adds_causal_market_context_and_signal_feature
     assert values["move_unit"][3, 1] == 8.0
 
 
+def test_build_regime_value_arrays_adds_causal_bottom_and_contraction_features():
+    values = build_regime_value_arrays(_arrays(), _features(), lookback_bars=2)
+
+    assert values["symbol_drawdown_from_lookback_high"][3, 0] == pytest.approx(-0.25)
+    assert values["symbol_drawdown_from_lookback_high"][3, 1] == pytest.approx(0.0)
+    assert values["btc_drawdown_from_lookback_high"][3, 0] == pytest.approx(-0.25)
+    assert values["btc_drawdown_from_lookback_high"][3, 1] == pytest.approx(-0.25)
+    assert values["market_drawdown_from_lookback_high"][3, 0] == pytest.approx(-0.125)
+    assert values["market_drawdown_from_lookback_high"][3, 1] == pytest.approx(-0.125)
+    assert values["symbol_range_position"][3, 0] == pytest.approx(0.0)
+    assert values["symbol_range_position"][3, 1] == pytest.approx(1.0)
+    assert values["btc_range_position"][3, 0] == pytest.approx(0.0)
+    assert values["btc_range_position"][3, 1] == pytest.approx(0.0)
+    assert values["market_range_position"][3, 0] == pytest.approx(0.5)
+    assert values["market_range_position"][3, 1] == pytest.approx(0.5)
+
+    assert values["pre_signal_atr_contraction"][3, 0] == pytest.approx(1.25)
+    assert values["pre_signal_true_range_contraction"][3, 0] == pytest.approx(1.25)
+    assert values["pre_signal_volume_contraction"][3, 0] == pytest.approx(1.2)
+
+
 def test_build_regime_filter_rules_uses_signal_only_quantiles():
     rules = build_regime_filter_rules(
         _features().signal,
