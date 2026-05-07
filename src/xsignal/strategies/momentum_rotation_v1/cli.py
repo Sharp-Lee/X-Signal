@@ -309,6 +309,10 @@ def _as_float(row: dict[str, str], key: str, default: float = 0.0) -> float:
     return float(value)
 
 
+def _has_value(row: dict[str, str], key: str) -> bool:
+    return row.get(key) not in (None, "")
+
+
 def _selection_score(
     row: dict[str, str],
     *,
@@ -320,6 +324,36 @@ def _selection_score(
         - drawdown_penalty * _as_float(row, "max_drawdown")
         - missing_return_penalty * _as_float(row, "missing_weighted_return_weight")
     )
+
+
+def _selection_filters(args: argparse.Namespace) -> dict[str, float | int | None]:
+    return {
+        "max_drawdown_lte": args.max_drawdown_lte,
+        "missing_weight_lte": args.missing_weight_lte,
+        "min_periods": args.min_periods,
+    }
+
+
+def _row_passes_selection_filters(
+    row: dict[str, str],
+    *,
+    max_drawdown_lte: float | None,
+    missing_weight_lte: float | None,
+    min_periods: int | None,
+) -> bool:
+    checks = [
+        (max_drawdown_lte, "max_drawdown", lambda actual, limit: actual <= limit),
+        (
+            missing_weight_lte,
+            "missing_weighted_return_weight",
+            lambda actual, limit: actual <= limit,
+        ),
+        (min_periods, "period_count", lambda actual, limit: actual >= limit),
+    ]
+    for limit, key, predicate in checks:
+        if limit is not None and (not _has_value(row, key) or not predicate(_as_float(row, key), limit)):
+            return False
+    return True
 
 
 def _format_float(value: str) -> str:
@@ -361,6 +395,13 @@ def _select_command(args: argparse.Namespace) -> Path:
         raise ValueError("scan summary.csv has no rows")
     scored_rows = []
     for row in rows:
+        if not _row_passes_selection_filters(
+            row,
+            max_drawdown_lte=args.max_drawdown_lte,
+            missing_weight_lte=args.missing_weight_lte,
+            min_periods=args.min_periods,
+        ):
+            continue
         score = _selection_score(
             row,
             drawdown_penalty=args.drawdown_penalty,
@@ -369,6 +410,8 @@ def _select_command(args: argparse.Namespace) -> Path:
         scored = dict(row)
         scored["score"] = score
         scored_rows.append(scored)
+    if not scored_rows:
+        raise ValueError("no scan rows passed selection filters")
     selected = max(scored_rows, key=lambda row: float(row["score"]))
     selection_id = args.selection_id or uuid.uuid4().hex
     command = _build_holdout_run_command(
@@ -384,6 +427,9 @@ def _select_command(args: argparse.Namespace) -> Path:
         "scan_id": args.scan_id,
         "drawdown_penalty": args.drawdown_penalty,
         "missing_return_penalty": args.missing_return_penalty,
+        "filters": _selection_filters(args),
+        "candidate_count": len(rows),
+        "eligible_count": len(scored_rows),
         "selected": selected,
         "data_split": manifest.get("data_split"),
         "holdout_run_command": command,
@@ -454,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
     select_parser.add_argument("--run-root", default="data")
     select_parser.add_argument("--drawdown-penalty", type=float, default=1.0)
     select_parser.add_argument("--missing-return-penalty", type=float, default=1.0)
+    select_parser.add_argument("--max-drawdown-lte", type=float)
+    select_parser.add_argument("--missing-weight-lte", type=float)
+    select_parser.add_argument("--min-periods", type=int)
     select_parser.set_defaults(func=_select_command)
     args = parser.parse_args(argv)
     args.func(args)

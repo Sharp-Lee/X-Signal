@@ -5,6 +5,7 @@ import json
 from datetime import date
 
 import numpy as np
+import pytest
 
 from xsignal.strategies.momentum_rotation_v1.cli import main
 from xsignal.strategies.momentum_rotation_v1.kernel import BacktestResult
@@ -554,6 +555,219 @@ def test_cli_select_writes_selection_and_holdout_run_command(tmp_path):
         "--top-n 10 --fee-bps 5.0 --slippage-bps 5.0 "
         "--min-rolling-7d-quote-volume 1000.0 --start-date 2025-11-09"
     )
+
+
+def _write_selection_scan(tmp_path, scan_id, rows):
+    scan_dir = tmp_path / "strategies" / "momentum_rotation_v1" / "scans" / scan_id
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "scan_id": scan_id,
+                "data_split": {
+                    "holdout_days": 180,
+                    "research_start": "2020-01-02T00:00:00Z",
+                    "research_end": "2025-11-08T00:00:00Z",
+                    "holdout_start": "2025-11-09T00:00:00Z",
+                    "holdout_end": "2026-05-08T00:00:00Z",
+                },
+            }
+        )
+    )
+    with (scan_dir / "summary.csv").open("w", newline="") as output:
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "scan_id",
+                "config_hash",
+                "top_n",
+                "fee_bps",
+                "slippage_bps",
+                "min_rolling_7d_quote_volume",
+                "final_equity",
+                "total_return",
+                "period_count",
+                "max_drawdown",
+                "missing_weighted_return_count",
+                "missing_weighted_return_weight",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return scan_dir
+
+
+def test_cli_select_applies_hard_filters_before_scoring(tmp_path):
+    scan_dir = _write_selection_scan(
+        tmp_path,
+        "filter-scan",
+        [
+            {
+                "scan_id": "filter-scan",
+                "config_hash": "high-return-high-drawdown",
+                "top_n": 5,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 0,
+                "final_equity": 11.0,
+                "total_return": 10.0,
+                "period_count": 365,
+                "max_drawdown": 0.8,
+                "missing_weighted_return_count": 0,
+                "missing_weighted_return_weight": 0.0,
+            },
+            {
+                "scan_id": "filter-scan",
+                "config_hash": "high-return-missing-prices",
+                "top_n": 10,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 0,
+                "final_equity": 9.0,
+                "total_return": 8.0,
+                "period_count": 365,
+                "max_drawdown": 0.1,
+                "missing_weighted_return_count": 2,
+                "missing_weighted_return_weight": 0.3,
+            },
+            {
+                "scan_id": "filter-scan",
+                "config_hash": "high-return-too-short",
+                "top_n": 15,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 0,
+                "final_equity": 8.0,
+                "total_return": 7.0,
+                "period_count": 20,
+                "max_drawdown": 0.1,
+                "missing_weighted_return_count": 0,
+                "missing_weighted_return_weight": 0.0,
+            },
+            {
+                "scan_id": "filter-scan",
+                "config_hash": "eligible-balanced",
+                "top_n": 20,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 1000,
+                "final_equity": 1.6,
+                "total_return": 0.6,
+                "period_count": 200,
+                "max_drawdown": 0.15,
+                "missing_weighted_return_count": 1,
+                "missing_weighted_return_weight": 0.05,
+            },
+        ],
+    )
+
+    exit_code = main(
+        [
+            "select",
+            "--root",
+            str(tmp_path),
+            "--scan-id",
+            "filter-scan",
+            "--selection-id",
+            "filtered-pick",
+            "--max-drawdown-lte",
+            "0.2",
+            "--missing-weight-lte",
+            "0.1",
+            "--min-periods",
+            "100",
+        ]
+    )
+
+    selection = json.loads((scan_dir / "selections" / "filtered-pick.json").read_text())
+
+    assert exit_code == 0
+    assert selection["candidate_count"] == 4
+    assert selection["eligible_count"] == 1
+    assert selection["filters"] == {
+        "max_drawdown_lte": 0.2,
+        "missing_weight_lte": 0.1,
+        "min_periods": 100,
+    }
+    assert selection["selected"]["config_hash"] == "eligible-balanced"
+
+
+def test_cli_select_raises_when_hard_filters_remove_all_rows(tmp_path):
+    _write_selection_scan(
+        tmp_path,
+        "empty-filter-scan",
+        [
+            {
+                "scan_id": "empty-filter-scan",
+                "config_hash": "too-deep",
+                "top_n": 5,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 0,
+                "final_equity": 2.0,
+                "total_return": 1.0,
+                "period_count": 365,
+                "max_drawdown": 0.8,
+                "missing_weighted_return_count": 0,
+                "missing_weighted_return_weight": 0.0,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="no scan rows passed selection filters"):
+        main(
+            [
+                "select",
+                "--root",
+                str(tmp_path),
+                "--scan-id",
+                "empty-filter-scan",
+                "--selection-id",
+                "empty-pick",
+                "--max-drawdown-lte",
+                "0.2",
+            ]
+        )
+
+
+def test_cli_select_does_not_pass_rows_with_missing_filter_metrics(tmp_path):
+    _write_selection_scan(
+        tmp_path,
+        "missing-filter-metrics-scan",
+        [
+            {
+                "scan_id": "missing-filter-metrics-scan",
+                "config_hash": "missing-safety-metrics",
+                "top_n": 5,
+                "fee_bps": 5,
+                "slippage_bps": 5,
+                "min_rolling_7d_quote_volume": 0,
+                "final_equity": 2.0,
+                "total_return": 1.0,
+                "period_count": 365,
+                "max_drawdown": "",
+                "missing_weighted_return_count": 0,
+                "missing_weighted_return_weight": "",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="no scan rows passed selection filters"):
+        main(
+            [
+                "select",
+                "--root",
+                str(tmp_path),
+                "--scan-id",
+                "missing-filter-metrics-scan",
+                "--selection-id",
+                "missing-filter-metrics-pick",
+                "--max-drawdown-lte",
+                "0.2",
+                "--missing-weight-lte",
+                "0.1",
+            ]
+        )
 
 
 def test_cli_prepare_from_canonical_uses_prepared_cache(tmp_path, monkeypatch):
