@@ -12,6 +12,7 @@ from xsignal.strategies.momentum_rotation_v1.data import (
     REQUIRED_CANONICAL_COLUMNS,
     CanonicalBarTable,
     StrategyCanonicalInputs,
+    collect_offline_strategy_inputs,
     collect_strategy_inputs,
     load_manifested_table,
 )
@@ -24,14 +25,21 @@ def write_manifested_partition(
     root: Path,
     timeframe: str = "1d",
     fill_policy: str = "raw",
+    *,
+    year: int = 2026,
+    month: int | None = None,
+    open_time: datetime | None = None,
 ) -> Path:
+    open_time = open_time or datetime(year, month or 1, 1, tzinfo=timezone.utc)
     partition_dir = (
         root
         / "canonical_bars"
         / f"timeframe={timeframe}"
         / f"fill_policy={fill_policy}"
-        / "year=2026"
+        / f"year={year:04d}"
     )
+    if month is not None:
+        partition_dir = partition_dir / f"month={month:02d}"
     parquet_path = partition_dir / "bars.abc.parquet"
     partition_dir.mkdir(parents=True)
     table = pa.table(
@@ -39,8 +47,8 @@ def write_manifested_partition(
             "symbol": ["BTCUSDT", "ETHUSDT"],
             "open_time": pa.array(
                 [
-                    datetime(2026, 1, 1, tzinfo=timezone.utc),
-                    datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    open_time,
+                    open_time,
                 ],
                 type=pa.timestamp("us", tz="UTC"),
             ),
@@ -180,3 +188,75 @@ def test_collect_strategy_inputs_calls_export_layer_for_required_timeframes(tmp_
     assert [call[0].fill_policy for call in calls] == ["raw", "raw", "raw"]
     assert all(call[2] for call in calls)
     assert Partition(timeframe="1h", year=2026, month=1) in calls[0][2]
+
+
+def test_collect_offline_strategy_inputs_reads_manifests_without_clickhouse_or_export(tmp_path):
+    write_manifested_partition(tmp_path, timeframe="1h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="4h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="1d", year=2026)
+
+    result = collect_strategy_inputs(
+        root=tmp_path,
+        config=MomentumRotationConfig(),
+        offline=True,
+        ensure=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no export")),
+        discover_bounds=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no bounds")),
+        clickhouse_client_factory=lambda: (_ for _ in ()).throw(AssertionError("no clickhouse")),
+    )
+
+    assert isinstance(result, StrategyCanonicalInputs)
+    assert result.bars_1h.table.num_rows == 2
+    assert result.bars_4h.table.num_rows == 2
+    assert result.bars_1d.table.num_rows == 2
+    assert [path.name for path in result.manifest_paths] == [
+        "manifest.json",
+        "manifest.json",
+        "manifest.json",
+    ]
+
+
+def test_collect_offline_strategy_inputs_rejects_missing_required_timeframe(tmp_path):
+    write_manifested_partition(tmp_path, timeframe="1h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="1d", year=2026)
+
+    with pytest.raises(ValueError, match="offline canonical manifests missing.*4h"):
+        collect_offline_strategy_inputs(root=tmp_path, config=MomentumRotationConfig())
+
+
+def test_collect_offline_strategy_inputs_orders_monthly_manifests(tmp_path):
+    write_manifested_partition(
+        tmp_path,
+        timeframe="1h",
+        year=2026,
+        month=2,
+        open_time=datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    write_manifested_partition(
+        tmp_path,
+        timeframe="1h",
+        year=2026,
+        month=1,
+        open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    write_manifested_partition(tmp_path, timeframe="4h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="1d", year=2026)
+
+    result = collect_offline_strategy_inputs(root=tmp_path, config=MomentumRotationConfig())
+
+    open_times = result.bars_1h.table["open_time"].to_pylist()
+    assert open_times == [
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, tzinfo=timezone.utc),
+    ]
+
+
+def test_collect_offline_strategy_inputs_rejects_partition_gaps(tmp_path):
+    write_manifested_partition(tmp_path, timeframe="1h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="1h", year=2026, month=3)
+    write_manifested_partition(tmp_path, timeframe="4h", year=2026, month=1)
+    write_manifested_partition(tmp_path, timeframe="1d", year=2026)
+
+    with pytest.raises(ValueError, match="offline canonical manifests are not contiguous.*1h"):
+        collect_offline_strategy_inputs(root=tmp_path, config=MomentumRotationConfig())

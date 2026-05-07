@@ -22,8 +22,13 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def prepare_from_canonical(root: Path, config: MomentumRotationConfig) -> tuple[PreparedArrays, list[str]]:
-    inputs = collect_strategy_inputs(root=root, config=config)
+def prepare_from_canonical(
+    root: Path,
+    config: MomentumRotationConfig,
+    *,
+    offline: bool = False,
+) -> tuple[PreparedArrays, list[str]]:
+    inputs = collect_strategy_inputs(root=root, config=config, offline=offline)
     arrays = prepare_daily_arrays(
         bars_1h=inputs.bars_1h,
         bars_4h=inputs.bars_4h,
@@ -40,7 +45,11 @@ def _run_command(args: argparse.Namespace) -> Path:
         slippage_bps=args.slippage_bps,
         min_rolling_7d_quote_volume=args.min_rolling_7d_quote_volume,
     )
-    arrays, canonical_manifests = prepare_from_canonical(Path(args.root), config)
+    arrays, canonical_manifests = prepare_from_canonical(
+        Path(args.root),
+        config,
+        offline=args.offline,
+    )
     signals = compute_momentum_signals(arrays, config)
     result = run_backtest(arrays, signals, config)
     runtime_seconds = time.perf_counter() - started
@@ -71,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--fee-bps", type=float, default=5.0)
     run_parser.add_argument("--slippage-bps", type=float, default=5.0)
     run_parser.add_argument("--min-rolling-7d-quote-volume", type=float, default=0.0)
+    run_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Only read existing canonical Parquet manifests; never connect to ClickHouse or export",
+    )
     run_parser.set_defaults(func=_run_command)
     args = parser.parse_args(argv)
     args.func(args)
