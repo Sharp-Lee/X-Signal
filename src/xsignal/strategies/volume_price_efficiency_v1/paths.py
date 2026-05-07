@@ -44,6 +44,10 @@ class VolumePriceEfficiencyPaths:
     def trailing_walk_forwards(self) -> Path:
         return self.base / "trailing_walk_forwards"
 
+    @property
+    def trailing_regime_scans(self) -> Path:
+        return self.base / "trailing_regime_scans"
+
     def run_dir(self, run_id: str) -> Path:
         return self.runs / _validate_plain_id(run_id, "run_id")
 
@@ -63,4 +67,10 @@ class VolumePriceEfficiencyPaths:
         return self.trailing_walk_forwards / _validate_plain_id(
             walk_forward_id,
             "walk_forward_id",
+        )
+
+    def trailing_regime_scan_dir(self, regime_scan_id: str) -> Path:
+        return self.trailing_regime_scans / _validate_plain_id(
+            regime_scan_id,
+            "regime_scan_id",
         )

@@ -534,6 +534,8 @@ def test_cli_trail_walk_forward_uses_research_only_prior_train_windows(
             "0.85",
             "--min-trades",
             "1",
+            "--top-k",
+            "1",
         ]
     )
 
@@ -569,3 +571,133 @@ def test_cli_trail_walk_forward_refuses_non_offline_mode(tmp_path):
         assert exc.code == 2
     else:
         raise AssertionError("non-offline trail-walk-forward should fail")
+
+
+def test_cli_trail_regime_scan_runs_on_research_only_and_writes_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    all_arrays = _arrays(8)
+    research_arrays = _arrays(5)
+    holdout_arrays = _arrays(3)
+    captured = {"split": [], "simulate_shapes": [], "signal_counts": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+
+    def fake_split(split_arrays, *, holdout_days):
+        captured["split"].append((split_arrays, holdout_days))
+        return (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T16:00:00Z",
+                "holdout_start": "2026-01-01T20:00:00Z",
+                "holdout_end": "2026-01-02T04:00:00Z",
+            },
+        )
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        captured["simulate_shapes"].append(sim_arrays.open.shape)
+        signal_count = int(np.count_nonzero(features.signal))
+        captured["signal_counts"].append(signal_count)
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+                for _ in range(signal_count)
+            ],
+            equity=np.ones(sim_arrays.open.shape[0], dtype=np.float64),
+            period_returns=np.zeros(max(sim_arrays.open.shape[0] - 1, 0), dtype=np.float64),
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        fake_split,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        lambda feature_arrays, _config: _features(feature_arrays.open.shape[0]),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-scan",
+            "--root",
+            str(tmp_path),
+            "--regime-scan-id",
+            "regime",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--feature-name",
+            "move_unit",
+            "--quantile",
+            "0.5",
+            "--min-trades",
+            "1",
+            "--top-k",
+            "1",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_regime_scans"
+        / "regime"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    rows = pq.read_table(output_dir / "summary.parquet").to_pylist()
+    top_filters = json.loads((output_dir / "top_filters.json").read_text())
+    assert exit_code == 0
+    assert captured["split"] == [(all_arrays, 7)]
+    assert captured["simulate_shapes"] == [(research_arrays.open.shape)] * 3
+    assert captured["signal_counts"] == [4, 2, 2]
+    assert manifest["run_type"] == "trailing_stop_research_regime_scan"
+    assert manifest["data_scope"] == "research_only"
+    assert manifest["threshold_scope"] == "full_research_signal_distribution_diagnostic_only"
+    assert manifest["data_split"]["holdout_days"] == 7
+    assert manifest["feature_names"] == ["move_unit"]
+    assert manifest["quantiles"] == [0.5]
+    assert [row["rule_id"] for row in rows] == [
+        "unfiltered",
+        "move_unit_gte_p50",
+        "move_unit_lt_p50",
+    ]
+    assert [row["rule_id"] for row in top_filters] == ["move_unit_gte_p50"]
+
+
+def test_cli_trail_regime_scan_refuses_non_offline_mode(tmp_path):
+    try:
+        main(["trail-regime-scan", "--root", str(tmp_path), "--regime-scan-id", "online"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("non-offline trail-regime-scan should fail")
