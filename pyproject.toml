@@ -1,0 +1,34 @@
+[project]
+name = "xsignal"
+version = "0.1.0"
+description = "High-performance custom strategy research foundation"
+requires-python = ">=3.12"
+dependencies = [
+  "clickhouse-connect>=0.8.0",
+  "filelock>=3.15.0",
+  "numpy>=2.0.0",
+  "pyarrow>=16.0.0",
+  "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.5.0",
+]
+
+[project.scripts]
+xsignal-export = "xsignal.data.canonical_export:main"
+xsignal-momentum-v1 = "xsignal.strategies.momentum_rotation_v1.cli:main"
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
