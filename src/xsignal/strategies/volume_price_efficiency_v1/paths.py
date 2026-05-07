@@ -24,5 +24,12 @@ class VolumePriceEfficiencyPaths:
     def runs(self) -> Path:
         return self.base / "runs"
 
+    @property
+    def scans(self) -> Path:
+        return self.base / "scans"
+
     def run_dir(self, run_id: str) -> Path:
         return self.runs / _validate_plain_id(run_id, "run_id")
+
+    def scan_dir(self, scan_id: str) -> Path:
+        return self.scans / _validate_plain_id(scan_id, "scan_id")
