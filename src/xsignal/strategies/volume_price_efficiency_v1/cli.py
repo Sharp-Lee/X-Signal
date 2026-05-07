@@ -21,6 +21,7 @@ from xsignal.strategies.volume_price_efficiency_v1.data import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.events import build_event_rows
 from xsignal.strategies.volume_price_efficiency_v1.features import (
+    FeatureArrays,
     build_signal_mask,
     compute_features,
 )
@@ -34,7 +35,19 @@ from xsignal.strategies.volume_price_efficiency_v1.scan import (
     select_top_configs,
 )
 from xsignal.strategies.volume_price_efficiency_v1.splits import (
+    holdout_mask_for_open_times,
     split_research_and_holdout,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing import (
+    simulate_trailing_stop,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing_artifacts import (
+    write_trailing_scan_artifacts,
+    write_trailing_run_artifacts,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing_scan import (
+    build_trailing_scan_row,
+    select_top_trailing_configs,
 )
 
 
@@ -176,6 +189,152 @@ def _scan_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _trail_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError("atr_multiplier must stay fixed at 2.0 for the holdout test")
+    config = VolumePriceEfficiencyConfig(
+        atr_window=args.atr_window,
+        volume_window=args.volume_window,
+        efficiency_lookback=args.efficiency_lookback,
+        efficiency_percentile=args.efficiency_percentile,
+        volume_floor=args.volume_floor,
+        min_move_unit=args.min_move_unit,
+        min_volume_unit=args.min_volume_unit,
+        min_close_position=args.min_close_position,
+        min_body_ratio=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    _research_arrays, holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+    if holdout_arrays is None:
+        raise ValueError("trail requires a positive holdout window")
+    full_features = compute_features(arrays, config)
+    holdout_mask = holdout_mask_for_open_times(arrays.open_times, holdout_days=args.holdout_days)
+    features = FeatureArrays(
+        true_range=full_features.true_range[holdout_mask],
+        atr=full_features.atr[holdout_mask],
+        move_unit=full_features.move_unit[holdout_mask],
+        volume_baseline=full_features.volume_baseline[holdout_mask],
+        volume_unit=full_features.volume_unit[holdout_mask],
+        efficiency=full_features.efficiency[holdout_mask],
+        efficiency_threshold=full_features.efficiency_threshold[holdout_mask],
+        close_position=full_features.close_position[holdout_mask],
+        body_ratio=full_features.body_ratio[holdout_mask],
+        signal=full_features.signal[holdout_mask],
+    )
+    result = simulate_trailing_stop(
+        holdout_arrays,
+        features,
+        config,
+        atr_multiplier=args.atr_multiplier,
+    )
+    runtime_seconds = time.perf_counter() - started
+    run_id = args.run_id or uuid.uuid4().hex
+    output = write_trailing_run_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        run_id=run_id,
+        config=config,
+        result=result,
+        symbols=holdout_arrays.symbols,
+        open_times=holdout_arrays.open_times,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+    )
+    print(output)
+    return output
+
+
+def _trail_scan_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError("atr_multiplier must stay fixed at 2.0 for research trail-scan")
+    configs = build_scan_configs(
+        efficiency_percentiles=args.efficiency_percentile,
+        min_move_units=args.min_move_unit,
+        min_volume_units=args.min_volume_unit,
+        min_close_positions=args.min_close_position,
+        min_body_ratios=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    base_config = configs[0]
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=base_config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    research_arrays, _holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+
+    scan_id = args.scan_id or uuid.uuid4().hex
+    rows = []
+    feature_cache = {}
+    for config in configs:
+        feature_key = (
+            config.atr_window,
+            config.volume_window,
+            config.efficiency_lookback,
+            config.efficiency_percentile,
+            config.volume_floor,
+        )
+        cached_features = feature_cache.get(feature_key)
+        if cached_features is None:
+            cached_features = compute_features(research_arrays, config)
+            feature_cache[feature_key] = cached_features
+        features = replace(
+            cached_features,
+            signal=build_signal_mask(research_arrays, cached_features, config),
+        )
+        result = simulate_trailing_stop(
+            research_arrays,
+            features,
+            config,
+            atr_multiplier=args.atr_multiplier,
+        )
+        rows.append(
+            build_trailing_scan_row(
+                scan_id=scan_id,
+                config=config,
+                result=result,
+                symbols=research_arrays.symbols,
+                atr_multiplier=args.atr_multiplier,
+            )
+        )
+
+    top_configs = select_top_trailing_configs(
+        rows,
+        top_k=args.top_k,
+        min_trades=args.min_trades,
+    )
+    runtime_seconds = time.perf_counter() - started
+    output = write_trailing_scan_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        scan_id=scan_id,
+        base_config=base_config,
+        rows=rows,
+        top_configs=top_configs,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        symbol_count=len(research_arrays.symbols),
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+        min_trades=args.min_trades,
+    )
+    print(output)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run volume_price_efficiency_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -214,6 +373,44 @@ def main(argv: list[str] | None = None) -> int:
     scan_parser.add_argument("--top-k", type=int, default=20)
     scan_parser.add_argument("--bucket-count", type=int, default=5)
     scan_parser.set_defaults(func=_scan_command)
+
+    trail_parser = subparsers.add_parser("trail")
+    trail_parser.add_argument("--root", default="data")
+    trail_parser.add_argument("--run-id")
+    trail_parser.add_argument("--offline", action="store_true", required=True)
+    trail_parser.add_argument("--atr-window", type=int, default=14)
+    trail_parser.add_argument("--volume-window", type=int, default=60)
+    trail_parser.add_argument("--efficiency-lookback", type=int, default=120)
+    trail_parser.add_argument("--efficiency-percentile", type=float, default=0.90)
+    trail_parser.add_argument("--volume-floor", type=float, default=0.2)
+    trail_parser.add_argument("--min-move-unit", type=float, default=0.5)
+    trail_parser.add_argument("--min-volume-unit", type=float, default=0.3)
+    trail_parser.add_argument("--min-close-position", type=float, default=0.7)
+    trail_parser.add_argument("--min-body-ratio", type=float, default=0.4)
+    trail_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_parser.set_defaults(func=_trail_command)
+
+    trail_scan_parser = subparsers.add_parser("trail-scan")
+    trail_scan_parser.add_argument("--root", default="data")
+    trail_scan_parser.add_argument("--scan-id")
+    trail_scan_parser.add_argument("--offline", action="store_true", required=True)
+    trail_scan_parser.add_argument("--efficiency-percentile", type=_parse_float_grid, default=(0.90, 0.95))
+    trail_scan_parser.add_argument("--min-move-unit", type=_parse_float_grid, default=(0.5, 0.8))
+    trail_scan_parser.add_argument("--min-volume-unit", type=_parse_float_grid, default=(0.3,))
+    trail_scan_parser.add_argument("--min-close-position", type=_parse_float_grid, default=(0.7, 0.8))
+    trail_scan_parser.add_argument("--min-body-ratio", type=_parse_float_grid, default=(0.4,))
+    trail_scan_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_scan_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_scan_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_scan_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_scan_parser.add_argument("--top-k", type=int, default=20)
+    trail_scan_parser.add_argument("--min-trades", type=int, default=200)
+    trail_scan_parser.set_defaults(func=_trail_scan_command)
 
     args = parser.parse_args(argv)
     args.func(args)

@@ -188,3 +188,39 @@ Expected scan outputs:
 - `summary.csv`
 - `top_configs.json`
 - `bucket_summary.parquet`
+
+Scan the same research window with the actual 2 ATR trailing-stop simulator:
+
+```bash
+xsignal-vpe-v1 trail-scan --root data --offline --scan-id vpe-trailing-scan
+```
+
+Use this before the final holdout trail when the production exit logic is a
+trailing stop. It ranks configs by research `total_return - max_drawdown`, keeps
+the latest 180 days reserved, and does not trade holdout rows.
+
+Expected trailing scan outputs:
+
+- `manifest.json`
+- `summary.json`
+- `summary.csv`
+- `top_configs.json`
+
+Run the trailing-stop production test on the reserved holdout window:
+
+```bash
+xsignal-vpe-v1 trail --root data --offline --run-id vpe-trailing-holdout
+```
+
+This is separate from the scan phase: it uses the chosen signal settings,
+reserves the latest 180 days by default, trades only that holdout window, enters
+on the next 4h open after a signal, locks each symbol independently while a
+position is open, and exits at a 2 ATR trailing stop.
+
+Expected trailing outputs:
+
+- `manifest.json`
+- `summary.json`
+- `trades.parquet`
+- `equity_curve.parquet`
+- `daily_positions.parquet`

@@ -7,6 +7,7 @@ import pytest
 
 from xsignal.strategies.volume_price_efficiency_v1.data import OhlcvArrays
 from xsignal.strategies.volume_price_efficiency_v1.splits import (
+    holdout_mask_for_open_times,
     split_research_and_holdout,
 )
 
@@ -75,3 +76,11 @@ def test_split_research_and_holdout_rejects_negative_days():
 def test_split_research_and_holdout_rejects_window_that_consumes_all_rows():
     with pytest.raises(ValueError, match="holdout window leaves no research rows"):
         split_research_and_holdout(_arrays(3), holdout_days=30)
+
+
+def test_holdout_mask_for_open_times_matches_tail_window():
+    arrays = _arrays()
+
+    mask = holdout_mask_for_open_times(arrays.open_times, holdout_days=3)
+
+    assert mask.tolist() == [False, False, False, False, False, False, True, True, True, True]
