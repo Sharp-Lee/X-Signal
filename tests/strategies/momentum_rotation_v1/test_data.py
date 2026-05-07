@@ -77,6 +77,35 @@ def test_load_manifested_table_validates_identity_and_columns(tmp_path):
     assert loaded.table.column_names == list(REQUIRED_CANONICAL_COLUMNS)
 
 
+def test_load_manifested_table_normalizes_epoch_seconds_open_time(tmp_path):
+    manifest_path = write_manifested_partition(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    first_open = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second_open = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    table = pa.table(
+        {
+            "symbol": ["BTCUSDT", "ETHUSDT"],
+            "open_time": pa.array(
+                [int(first_open.timestamp()), int(second_open.timestamp())],
+                type=pa.uint32(),
+            ),
+            "close": [100.0, 50.0],
+            "quote_volume": [10_000.0, 8_000.0],
+            "bar_count": [1440, 1440],
+            "expected_1m_count": [1440, 1440],
+            "is_complete": [True, True],
+            "has_synthetic": [False, False],
+            "fill_policy": ["raw", "raw"],
+        }
+    )
+    pq.write_table(table.select(list(REQUIRED_CANONICAL_COLUMNS)), Path(manifest["parquet_path"]))
+
+    loaded = load_manifested_table(manifest_path, timeframe="1d", fill_policy="raw")
+
+    assert loaded.table["open_time"].type == pa.timestamp("s", tz="UTC")
+    assert loaded.table["open_time"].to_pylist() == [first_open, second_open]
+
+
 def test_load_manifested_table_rejects_fill_policy_mismatch(tmp_path):
     manifest_path = write_manifested_partition(tmp_path, fill_policy="prev_close_zero_volume")
 

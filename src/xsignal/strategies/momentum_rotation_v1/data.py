@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from xsignal.data.canonical_bars import CanonicalRequest
@@ -31,6 +32,22 @@ REQUIRED_CANONICAL_COLUMNS = (
     "has_synthetic",
     "fill_policy",
 )
+
+
+def _normalize_open_time_column(table: pa.Table) -> pa.Table:
+    field_index = table.schema.get_field_index("open_time")
+    open_time = table["open_time"]
+    target_type = pa.timestamp("s", tz="UTC")
+    if pa.types.is_timestamp(open_time.type):
+        normalized = pc.cast(open_time, target_type)
+    elif pa.types.is_integer(open_time.type):
+        # ClickHouse DateTime can arrive through Arrow as epoch seconds.
+        normalized = pa.chunked_array(
+            [chunk.cast(pa.int64()).view(target_type) for chunk in open_time.chunks]
+        )
+    else:
+        raise ValueError(f"unsupported open_time type: {open_time.type}")
+    return table.set_column(field_index, "open_time", normalized)
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,7 @@ def load_manifested_table(
     if missing:
         raise ValueError(f"missing required columns: {missing}")
     table = table.select(list(REQUIRED_CANONICAL_COLUMNS))
+    table = _normalize_open_time_column(table)
     if table.num_rows != int(manifest["row_count"]):
         raise ValueError("manifest row_count does not match parquet")
     return CanonicalBarTable(

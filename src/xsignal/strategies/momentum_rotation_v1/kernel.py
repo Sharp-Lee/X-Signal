@@ -55,7 +55,14 @@ def run_backtest(
     if not any_eligible:
         raise ValueError("No eligible symbols")
     symbol_returns = arrays.close_1d[1:] / arrays.close_1d[:-1] - 1.0
-    period_returns = np.sum(weights[:-1] * symbol_returns, axis=1) - costs[:-1]
+    weighted_returns = np.zeros_like(symbol_returns)
+    np.multiply(
+        weights[:-1],
+        symbol_returns,
+        out=weighted_returns,
+        where=weights[:-1] != 0.0,
+    )
+    period_returns = np.sum(weighted_returns, axis=1) - costs[:-1]
     if not np.all(np.isfinite(period_returns)):
         raise ValueError("portfolio returns contain NaN or infinite values")
     equity = np.empty(t_count, dtype=np.float64)
