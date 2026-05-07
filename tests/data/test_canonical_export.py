@@ -39,7 +39,15 @@ CANONICAL_COLUMNS = [
 ]
 
 
-def write_canonical_parquet(path: Path, row_count: int) -> None:
+def write_canonical_parquet(
+    path: Path,
+    row_count: int,
+    *,
+    bar_count: int = 60,
+    fill_policy: str = "raw",
+    synthetic_1m_count: int = 0,
+    has_synthetic: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.table(
         {
@@ -54,12 +62,12 @@ def write_canonical_parquet(path: Path, row_count: int) -> None:
             "trade_count": [10] * row_count,
             "taker_buy_volume": [50.0] * row_count,
             "taker_buy_quote_volume": [75.0] * row_count,
-            "bar_count": [60] * row_count,
-            "synthetic_1m_count": [0] * row_count,
+            "bar_count": [bar_count] * row_count,
+            "synthetic_1m_count": [synthetic_1m_count] * row_count,
             "expected_1m_count": [60] * row_count,
             "is_complete": [True] * row_count,
-            "has_synthetic": [False] * row_count,
-            "fill_policy": ["raw"] * row_count,
+            "has_synthetic": [has_synthetic] * row_count,
+            "fill_policy": [fill_policy] * row_count,
         }
     )
     pq.write_table(table.select(CANONICAL_COLUMNS), path)
@@ -70,13 +78,32 @@ def file_digest(path: Path) -> str:
 
 
 class FakeExporter:
-    def __init__(self, row_count: int = 3) -> None:
+    def __init__(
+        self,
+        row_count: int = 3,
+        *,
+        bar_count: int = 60,
+        fill_policy: str = "raw",
+        synthetic_1m_count: int = 0,
+        has_synthetic: bool = False,
+    ) -> None:
         self.calls = []
         self.row_count = row_count
+        self.bar_count = bar_count
+        self.fill_policy = fill_policy
+        self.synthetic_1m_count = synthetic_1m_count
+        self.has_synthetic = has_synthetic
 
     def export(self, sql: str, path: Path) -> int:
         self.calls.append((sql, path))
-        write_canonical_parquet(path, self.row_count)
+        write_canonical_parquet(
+            path,
+            self.row_count,
+            bar_count=self.bar_count,
+            fill_policy=self.fill_policy,
+            synthetic_1m_count=self.synthetic_1m_count,
+            has_synthetic=self.has_synthetic,
+        )
         return self.row_count
 
 
@@ -143,20 +170,31 @@ def test_ensure_rejects_paths_fill_policy_mismatch(tmp_path):
 
 
 def test_ensure_passes_filled_policy_to_query_builder(tmp_path):
-    exporter = FakeExporter()
+    exporter = FakeExporter(
+        bar_count=59,
+        fill_policy="prev_close_zero_volume",
+        synthetic_1m_count=1,
+        has_synthetic=True,
+    )
     paths = CanonicalPaths(root=tmp_path, fill_policy="prev_close_zero_volume")
     partition = Partition(timeframe="1h", year=2026, month=5)
 
-    with pytest.raises(NotImplementedError, match="prev_close_zero_volume query is implemented in Task 4"):
-        ensure_canonical_bars(
-            request=CanonicalRequest(timeframe="1h", fill_policy="prev_close_zero_volume"),
-            paths=paths,
-            partitions=[partition],
-            exporter=exporter,
-            now=lambda: datetime(2026, 5, 6, tzinfo=timezone.utc),
-        )
+    ensure_canonical_bars(
+        request=CanonicalRequest(timeframe="1h", fill_policy="prev_close_zero_volume"),
+        paths=paths,
+        partitions=[partition],
+        exporter=exporter,
+        now=lambda: datetime(2026, 5, 6, tzinfo=timezone.utc),
+    )
 
-    assert exporter.calls == []
+    assert len(exporter.calls) == 1
+    assert "'prev_close_zero_volume' AS fill_policy" in exporter.calls[0][0]
+    assert "fill_policy=prev_close_zero_volume" in str(paths.manifest_path(partition))
+    manifest = json.loads(paths.manifest_path(partition).read_text())
+    assert manifest["fill_policy"] == "prev_close_zero_volume"
+    assert manifest["synthetic_generation_version"] == "prev-close-zero-volume-v1"
+    assert manifest["synthetic_1m_count_total"] == 3
+    assert manifest["incomplete_raw_bar_count"] == 3
 
 
 def test_ensure_reuses_complete_partition(tmp_path):
