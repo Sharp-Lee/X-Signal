@@ -7,6 +7,8 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+
 from xsignal.strategies.volume_price_efficiency_v1.artifacts import (
     write_run_artifacts,
     write_scan_artifacts,
@@ -70,6 +72,10 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     build_regime_value_arrays,
     select_top_regime_filters,
     write_trailing_regime_scan_artifacts,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
+    build_regime_walk_forward_fold_row,
+    write_trailing_regime_walk_forward_artifacts,
 )
 
 
@@ -741,6 +747,191 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _slice_regime_values(
+    values_by_feature: dict[str, object],
+    indices,
+) -> dict[str, object]:
+    indexer = indices if isinstance(indices, np.ndarray) else np.array(indices, dtype=np.int64)
+    return {name: values[indexer] for name, values in values_by_feature.items()}
+
+
+def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError(
+            "atr_multiplier must stay fixed at 2.0 for research trail-regime-walk-forward"
+        )
+    config = VolumePriceEfficiencyConfig(
+        atr_window=args.atr_window,
+        volume_window=args.volume_window,
+        efficiency_lookback=args.efficiency_lookback,
+        efficiency_percentile=args.efficiency_percentile,
+        volume_floor=args.volume_floor,
+        min_move_unit=args.min_move_unit,
+        min_volume_unit=args.min_volume_unit,
+        min_close_position=args.min_close_position,
+        min_body_ratio=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    research_arrays, _holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+    base_features = compute_features(research_arrays, config)
+    features = replace(
+        base_features,
+        signal=build_signal_mask(research_arrays, base_features, config),
+    )
+    values_by_feature = build_regime_value_arrays(
+        research_arrays,
+        features,
+        lookback_bars=args.lookback_bars,
+    )
+    folds = build_walk_forward_folds(
+        research_arrays.open_times,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days,
+    )
+
+    regime_walk_forward_id = args.regime_walk_forward_id or uuid.uuid4().hex
+    fold_rows = []
+    selection_rows = []
+    selected_train_rows = []
+    for fold_index, fold in enumerate(folds):
+        train_arrays = slice_ohlcv_arrays(research_arrays, fold.train_indices)
+        train_features = slice_feature_arrays(features, fold.train_indices)
+        train_values = _slice_regime_values(values_by_feature, fold.train_indices)
+        train_rules = build_regime_filter_rules(
+            train_features.signal,
+            train_values,
+            feature_names=args.feature_name,
+            quantiles=args.quantile,
+        )
+        rule_by_id = {rule.rule_id: rule for rule in train_rules}
+        train_base_signal_count = int(train_features.signal.sum())
+        train_rows = []
+        for rule in train_rules:
+            filtered_train_signal = apply_regime_filter_rule(
+                train_features.signal,
+                train_values,
+                rule,
+            )
+            result = simulate_trailing_stop(
+                train_arrays,
+                replace(train_features, signal=filtered_train_signal),
+                config,
+                atr_multiplier=args.atr_multiplier,
+            )
+            row = build_regime_scan_row(
+                regime_scan_id=regime_walk_forward_id,
+                config=config,
+                result=result,
+                symbols=train_arrays.symbols,
+                rule=rule,
+                base_signal_count=train_base_signal_count,
+                filtered_signal_count=int(filtered_train_signal.sum()),
+                atr_multiplier=args.atr_multiplier,
+            )
+            row.update(
+                {
+                    "regime_walk_forward_id": regime_walk_forward_id,
+                    "fold_index": fold_index,
+                    "train_start": fold.train_start.isoformat(),
+                    "train_end": fold.train_end.isoformat(),
+                    "test_start": fold.test_start.isoformat(),
+                    "test_end": fold.test_end.isoformat(),
+                    "threshold_source": "train_fold_signal_distribution",
+                    "is_selected": False,
+                }
+            )
+            train_rows.append(row)
+
+        selected = select_top_regime_filters(
+            train_rows,
+            top_k=1,
+            min_trades=args.min_trades,
+        )
+        selected_train_row = selected[0] if selected else None
+        selected_rule = None
+        validation_row = None
+        if selected_train_row is not None:
+            selected_train_row["is_selected"] = True
+            selected_train_rows.append(selected_train_row)
+            selected_rule = rule_by_id[str(selected_train_row["rule_id"])]
+            validation_arrays = slice_ohlcv_arrays(research_arrays, fold.test_indices)
+            validation_features = slice_feature_arrays(features, fold.test_indices)
+            validation_values = _slice_regime_values(values_by_feature, fold.test_indices)
+            filtered_validation_signal = apply_regime_filter_rule(
+                validation_features.signal,
+                validation_values,
+                selected_rule,
+            )
+            validation_result = simulate_trailing_stop(
+                validation_arrays,
+                replace(validation_features, signal=filtered_validation_signal),
+                config,
+                atr_multiplier=args.atr_multiplier,
+            )
+            validation_row = build_regime_scan_row(
+                regime_scan_id=regime_walk_forward_id,
+                config=config,
+                result=validation_result,
+                symbols=validation_arrays.symbols,
+                rule=selected_rule,
+                base_signal_count=int(validation_features.signal.sum()),
+                filtered_signal_count=int(filtered_validation_signal.sum()),
+                atr_multiplier=args.atr_multiplier,
+            )
+
+        selection_rows.extend(train_rows)
+        fold_rows.append(
+            build_regime_walk_forward_fold_row(
+                regime_walk_forward_id=regime_walk_forward_id,
+                fold_index=fold_index,
+                fold=fold,
+                selected_train_row=selected_train_row,
+                validation_row=validation_row,
+                selected_rule=selected_rule,
+                selected_config=config,
+            )
+        )
+
+    top_filters = select_top_regime_filters(
+        selected_train_rows,
+        top_k=args.top_k,
+        min_trades=args.min_trades,
+    )
+    runtime_seconds = time.perf_counter() - started
+    output = write_trailing_regime_walk_forward_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        regime_walk_forward_id=regime_walk_forward_id,
+        config=config,
+        fold_rows=fold_rows,
+        selection_rows=selection_rows,
+        top_filters=top_filters,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        symbol_count=len(research_arrays.symbols),
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+        lookback_bars=args.lookback_bars,
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days,
+        min_trades=args.min_trades,
+        quantiles=args.quantile,
+        feature_names=args.feature_name,
+    )
+    print(output)
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run volume_price_efficiency_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -900,6 +1091,42 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_scan_parser.add_argument("--top-k", type=int, default=20)
     trail_regime_scan_parser.add_argument("--min-trades", type=int, default=200)
     trail_regime_scan_parser.set_defaults(func=_trail_regime_scan_command)
+
+    trail_regime_walk_forward_parser = subparsers.add_parser("trail-regime-walk-forward")
+    trail_regime_walk_forward_parser.add_argument("--root", default="data")
+    trail_regime_walk_forward_parser.add_argument("--regime-walk-forward-id")
+    trail_regime_walk_forward_parser.add_argument("--offline", action="store_true", required=True)
+    trail_regime_walk_forward_parser.add_argument("--atr-window", type=int, default=14)
+    trail_regime_walk_forward_parser.add_argument("--volume-window", type=int, default=60)
+    trail_regime_walk_forward_parser.add_argument("--efficiency-lookback", type=int, default=120)
+    trail_regime_walk_forward_parser.add_argument("--efficiency-percentile", type=float, default=0.90)
+    trail_regime_walk_forward_parser.add_argument("--volume-floor", type=float, default=0.2)
+    trail_regime_walk_forward_parser.add_argument("--min-move-unit", type=float, default=0.5)
+    trail_regime_walk_forward_parser.add_argument("--min-volume-unit", type=float, default=0.3)
+    trail_regime_walk_forward_parser.add_argument("--min-close-position", type=float, default=0.7)
+    trail_regime_walk_forward_parser.add_argument("--min-body-ratio", type=float, default=0.4)
+    trail_regime_walk_forward_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_regime_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_regime_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_regime_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_regime_walk_forward_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_regime_walk_forward_parser.add_argument("--lookback-bars", type=int, default=30)
+    trail_regime_walk_forward_parser.add_argument("--train-days", type=int, default=720)
+    trail_regime_walk_forward_parser.add_argument("--test-days", type=int, default=90)
+    trail_regime_walk_forward_parser.add_argument("--step-days", type=int, default=90)
+    trail_regime_walk_forward_parser.add_argument(
+        "--feature-name",
+        type=_parse_string_grid,
+        default=DEFAULT_REGIME_FEATURES,
+    )
+    trail_regime_walk_forward_parser.add_argument(
+        "--quantile",
+        type=_parse_float_grid,
+        default=(0.2, 0.4, 0.6, 0.8),
+    )
+    trail_regime_walk_forward_parser.add_argument("--top-k", type=int, default=20)
+    trail_regime_walk_forward_parser.add_argument("--min-trades", type=int, default=200)
+    trail_regime_walk_forward_parser.set_defaults(func=_trail_regime_walk_forward_command)
 
     args = parser.parse_args(argv)
     args.func(args)
