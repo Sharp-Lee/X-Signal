@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from xsignal.strategies.volume_price_efficiency_v1.live.models import (
@@ -77,6 +78,13 @@ class BinanceUsdFuturesTestnetBroker:
         payload = self.rest_client.request("GET", "/fapi/v1/multiAssetsMargin", signed=True)
         return "multi_asset" if payload.get("multiAssetsMargin") else "single_asset_usdt"
 
+    def get_symbol_metadata(self, symbol: str) -> SymbolMetadata:
+        payload = self.rest_client.request("GET", "/fapi/v1/exchangeInfo")
+        for item in payload.get("symbols", []):
+            if item.get("symbol") == symbol:
+                return parse_symbol_metadata(item, updated_at=datetime.now(timezone.utc))
+        raise ValueError(f"missing Binance symbol metadata for {symbol}")
+
     def change_margin_type(self, symbol: str, margin_mode: str) -> dict[str, Any]:
         if margin_mode != "isolated":
             raise ValueError("only isolated margin is supported")
@@ -121,16 +129,17 @@ class BinanceUsdFuturesTestnetBroker:
     ) -> dict[str, Any]:
         return self.rest_client.request(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             signed=True,
             params={
+                "algoType": "CONDITIONAL",
                 "symbol": symbol,
                 "side": "SELL",
                 "type": "STOP_MARKET",
-                "stopPrice": _format_decimal(stop_price),
+                "triggerPrice": _format_decimal(stop_price),
                 "closePosition": "true",
                 "workingType": "CONTRACT_PRICE",
-                "newClientOrderId": client_order_id,
+                "clientAlgoId": client_order_id,
                 "positionSide": "BOTH",
             },
         )
@@ -138,9 +147,55 @@ class BinanceUsdFuturesTestnetBroker:
     def cancel_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
         return self.rest_client.request(
             "DELETE",
+            "/fapi/v1/algoOrder",
+            signed=True,
+            params={"clientAlgoId": client_order_id},
+        )
+
+    def get_position_risk(self, *, symbol: str) -> list[dict[str, Any]]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v3/positionRisk",
+            signed=True,
+            params={"symbol": symbol},
+        )
+
+    def get_open_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v1/algoOrder",
+            signed=True,
+            params={"clientAlgoId": client_order_id},
+        )
+
+    def get_open_orders(self, *, symbol: str) -> list[dict[str, Any]]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v1/openAlgoOrders",
+            signed=True,
+            params={"symbol": symbol},
+        )
+
+    def market_sell_reduce_only(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return self.rest_client.request(
+            "POST",
             "/fapi/v1/order",
             signed=True,
-            params={"symbol": symbol, "origClientOrderId": client_order_id},
+            params={
+                "symbol": symbol,
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": _format_decimal(quantity),
+                "reduceOnly": "true",
+                "newClientOrderId": client_order_id,
+                "positionSide": "BOTH",
+            },
         )
 
     def test_order(
@@ -168,4 +223,5 @@ class BinanceUsdFuturesTestnetBroker:
 
 
 def _format_decimal(value: float) -> str:
-    return f"{float(value):.12f}".rstrip("0").rstrip(".")
+    decimal_value = Decimal(str(value)).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+    return format(decimal_value.normalize(), "f")
