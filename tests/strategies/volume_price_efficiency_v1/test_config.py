@@ -18,10 +18,17 @@ def test_default_config_matches_design():
     assert config.efficiency_lookback == 120
     assert config.efficiency_percentile == 0.90
     assert config.volume_floor == 0.2
+    assert config.signal_mode == "classic"
     assert config.min_move_unit == 0.5
     assert config.min_volume_unit == 0.3
     assert config.min_close_position == 0.7
     assert config.min_body_ratio == 0.4
+    assert config.seed_efficiency_lookback == 4
+    assert config.seed_min_efficiency_ratio_to_max == 1.5
+    assert config.seed_min_efficiency_ratio_to_mean == 3.0
+    assert config.seed_max_volume_unit == 1.2
+    assert config.seed_bottom_lookback == 30
+    assert config.seed_max_close_position_in_range == 0.6
     assert config.horizons == (1, 3, 6, 12, 30)
     assert config.fee_bps == 5.0
     assert config.slippage_bps == 5.0
@@ -52,10 +59,17 @@ def test_config_rejects_invalid_values():
         {"efficiency_percentile": 1.0},
         {"efficiency_percentile": 0.0},
         {"volume_floor": 0.0},
+        {"signal_mode": "burst"},
         {"min_move_unit": -0.1},
         {"min_volume_unit": -0.1},
         {"min_close_position": 1.1},
         {"min_body_ratio": 1.1},
+        {"seed_efficiency_lookback": 0},
+        {"seed_min_efficiency_ratio_to_max": 1.0},
+        {"seed_min_efficiency_ratio_to_mean": 1.0},
+        {"seed_max_volume_unit": 0.0},
+        {"seed_bottom_lookback": 0},
+        {"seed_max_close_position_in_range": 1.1},
         {"horizons": ()},
         {"fee_bps": -1},
         {"slippage_bps": -1},

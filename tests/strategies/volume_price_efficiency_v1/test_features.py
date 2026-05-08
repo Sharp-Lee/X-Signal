@@ -192,3 +192,111 @@ def test_build_signal_mask_reuses_features_with_different_filter_thresholds():
 
     assert features.signal[3, 0]
     assert strict_signal.tolist() == [[False], [False], [False], [False]]
+
+
+def test_seed_efficiency_mode_flags_rave_2026_04_07_like_local_efficiency_jump():
+    arrays = _arrays(
+        open_values=[0.31000, 0.30200, 0.29400, 0.28600, 0.23725, 0.25322, 0.25622, 0.24917, 0.25176, 0.24754],
+        high_values=[0.31600, 0.30600, 0.29800, 0.29100, 0.27604, 0.26519, 0.25993, 0.25718, 0.25909, 0.26975],
+        low_values=[0.30000, 0.29200, 0.28400, 0.27600, 0.22785, 0.24440, 0.24433, 0.24409, 0.24260, 0.24754],
+        close_values=[0.30200, 0.29400, 0.28600, 0.27800, 0.25331, 0.25629, 0.24912, 0.25179, 0.24774, 0.26679],
+        quote_volume_values=[
+            5_900_000.0,
+            5_800_000.0,
+            5_700_000.0,
+            5_600_000.0,
+            5_683_912.669,
+            2_853_598.347,
+            1_584_857.533,
+            1_400_005.368,
+            1_492_254.876,
+            2_632_664.878,
+        ],
+    )
+    seed_config = VolumePriceEfficiencyConfig(
+        signal_mode="seed_efficiency",
+        atr_window=2,
+        volume_window=4,
+        efficiency_lookback=4,
+        min_move_unit=0.5,
+        min_volume_unit=0.0,
+        min_close_position=0.75,
+        min_body_ratio=0.6,
+        seed_efficiency_lookback=4,
+        seed_min_efficiency_ratio_to_max=1.05,
+        seed_min_efficiency_ratio_to_mean=3.0,
+        seed_max_volume_unit=2.0,
+        seed_bottom_lookback=9,
+        seed_max_close_position_in_range=0.7,
+    )
+    strict_classic_config = seed_config.model_copy(
+        update={
+            "signal_mode": "classic",
+            "min_move_unit": 1.2,
+            "min_volume_unit": 1.0,
+            "min_close_position": 0.94,
+            "min_body_ratio": 0.85,
+        }
+    )
+
+    seed_features = compute_features(arrays, seed_config)
+    strict_features = compute_features(arrays, strict_classic_config)
+
+    recent_efficiency = seed_features.efficiency[5:9, 0]
+    assert seed_features.efficiency[9, 0] > np.nanmax(recent_efficiency) * 1.05
+    assert seed_features.efficiency[9, 0] > np.nanmean(recent_efficiency) * 3.0
+    assert seed_features.signal.tolist() == [
+        [False],
+        [False],
+        [False],
+        [False],
+        [False],
+        [False],
+        [False],
+        [False],
+        [False],
+        [True],
+    ]
+    assert not strict_features.signal[9, 0]
+
+
+def test_seed_efficiency_mode_rejects_high_volume_burst_after_seed_window():
+    arrays = _arrays(
+        open_values=[0.31000, 0.30200, 0.29400, 0.28600, 0.23725, 0.25322, 0.25622, 0.24917, 0.25176, 0.31614],
+        high_values=[0.31600, 0.30600, 0.29800, 0.29100, 0.27604, 0.26519, 0.25993, 0.25718, 0.25909, 1.12928],
+        low_values=[0.30000, 0.29200, 0.28400, 0.27600, 0.22785, 0.24440, 0.24433, 0.24409, 0.24260, 0.30537],
+        close_values=[0.30200, 0.29400, 0.28600, 0.27800, 0.25331, 0.25629, 0.24912, 0.25179, 0.24774, 0.99763],
+        quote_volume_values=[
+            5_900_000.0,
+            5_800_000.0,
+            5_700_000.0,
+            5_600_000.0,
+            5_683_912.669,
+            2_853_598.347,
+            1_584_857.533,
+            1_400_005.368,
+            1_492_254.876,
+            469_826_525.4,
+        ],
+    )
+    config = VolumePriceEfficiencyConfig(
+        signal_mode="seed_efficiency",
+        atr_window=2,
+        volume_window=4,
+        efficiency_lookback=4,
+        min_move_unit=0.5,
+        min_volume_unit=0.0,
+        min_close_position=0.75,
+        min_body_ratio=0.6,
+        seed_efficiency_lookback=4,
+        seed_min_efficiency_ratio_to_max=1.1,
+        seed_min_efficiency_ratio_to_mean=1.1,
+        seed_max_volume_unit=2.0,
+        seed_bottom_lookback=9,
+        seed_max_close_position_in_range=0.7,
+    )
+
+    features = compute_features(arrays, config)
+
+    assert features.volume_unit[9, 0] > config.seed_max_volume_unit
+    assert not features.signal[9, 0]

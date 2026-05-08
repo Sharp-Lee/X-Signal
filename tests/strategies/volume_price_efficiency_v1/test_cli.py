@@ -163,6 +163,20 @@ def test_cli_passes_config_values_to_pipeline(tmp_path, monkeypatch):
             "20",
             "--efficiency-percentile",
             "0.95",
+            "--signal-mode",
+            "seed_efficiency",
+            "--seed-efficiency-lookback",
+            "4",
+            "--seed-min-efficiency-ratio-to-max",
+            "2.0",
+            "--seed-min-efficiency-ratio-to-mean",
+            "4.0",
+            "--seed-max-volume-unit",
+            "0.9",
+            "--seed-bottom-lookback",
+            "45",
+            "--seed-max-close-position-in-range",
+            "0.5",
             "--min-move-unit",
             "0.8",
             "--fee-bps",
@@ -174,6 +188,13 @@ def test_cli_passes_config_values_to_pipeline(tmp_path, monkeypatch):
 
     assert captured[0].atr_window == 20
     assert captured[0].efficiency_percentile == 0.95
+    assert captured[0].signal_mode == "seed_efficiency"
+    assert captured[0].seed_efficiency_lookback == 4
+    assert captured[0].seed_min_efficiency_ratio_to_max == 2.0
+    assert captured[0].seed_min_efficiency_ratio_to_mean == 4.0
+    assert captured[0].seed_max_volume_unit == 0.9
+    assert captured[0].seed_bottom_lookback == 45
+    assert captured[0].seed_max_close_position_in_range == 0.5
     assert captured[0].min_move_unit == 0.8
     assert captured[0].fee_bps == 2.5
     assert captured[0].baseline_seed == 99

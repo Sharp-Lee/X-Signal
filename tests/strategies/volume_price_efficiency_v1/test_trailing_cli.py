@@ -483,6 +483,20 @@ def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, m
             "0.94",
             "--min-body-ratio",
             "0.85",
+            "--signal-mode",
+            "seed_efficiency",
+            "--seed-efficiency-lookback",
+            "4,5",
+            "--seed-min-efficiency-ratio-to-max",
+            "1.5,2.0",
+            "--seed-min-efficiency-ratio-to-mean",
+            "3.0",
+            "--seed-max-volume-unit",
+            "0.9,1.2",
+            "--seed-bottom-lookback",
+            "30",
+            "--seed-max-close-position-in-range",
+            "0.5,0.6",
             "--atr-multiplier",
             "1.5,3.0",
             "--top-k",
@@ -503,18 +517,20 @@ def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, m
     top_configs = json.loads((scan_dir / "top_configs.json").read_text())
     assert exit_code == 0
     assert captured["split"] == [(arrays, 7)]
-    assert [config.efficiency_percentile for _arrays, config in captured["features"]] == [0.9, 0.95]
-    assert [call[0] for call in captured["simulate"]] == [
-        research_arrays,
-        research_arrays,
-        research_arrays,
-        research_arrays,
-    ]
-    assert [call[3] for call in captured["simulate"]] == [1.5, 3.0, 1.5, 3.0]
+    assert len(captured["features"]) == 2
+    assert len(captured["simulate"]) == 64
+    simulated_configs = [call[2] for call in captured["simulate"]]
+    assert {config.signal_mode for config in simulated_configs} == {"seed_efficiency"}
+    assert {config.seed_efficiency_lookback for config in simulated_configs} == {4, 5}
+    assert {config.seed_min_efficiency_ratio_to_max for config in simulated_configs} == {1.5, 2.0}
+    assert {config.seed_max_volume_unit for config in simulated_configs} == {0.9, 1.2}
+    assert {config.seed_max_close_position_in_range for config in simulated_configs} == {0.5, 0.6}
+    assert all(call[0] is research_arrays for call in captured["simulate"])
+    assert [call[3] for call in captured["simulate"][:4]] == [1.5, 3.0, 1.5, 3.0]
     assert manifest["run_type"] == "trailing_stop_research_scan"
     assert manifest["data_split"]["holdout_days"] == 7
     assert manifest["atr_multipliers"] == [1.5, 3.0]
-    assert manifest["combination_count"] == 4
+    assert manifest["combination_count"] == 64
     assert len(top_configs) == 1
     assert (scan_dir / "summary.csv").exists()
 

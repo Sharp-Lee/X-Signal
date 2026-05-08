@@ -102,22 +102,53 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def _run_command(args: argparse.Namespace) -> Path:
-    started = time.perf_counter()
-    config = VolumePriceEfficiencyConfig(
+def _config_from_args(args: argparse.Namespace) -> VolumePriceEfficiencyConfig:
+    return VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
         efficiency_lookback=args.efficiency_lookback,
         efficiency_percentile=args.efficiency_percentile,
         volume_floor=args.volume_floor,
+        signal_mode=args.signal_mode,
         min_move_unit=args.min_move_unit,
         min_volume_unit=args.min_volume_unit,
         min_close_position=args.min_close_position,
         min_body_ratio=args.min_body_ratio,
+        seed_efficiency_lookback=args.seed_efficiency_lookback,
+        seed_min_efficiency_ratio_to_max=args.seed_min_efficiency_ratio_to_max,
+        seed_min_efficiency_ratio_to_mean=args.seed_min_efficiency_ratio_to_mean,
+        seed_max_volume_unit=args.seed_max_volume_unit,
+        seed_bottom_lookback=args.seed_bottom_lookback,
+        seed_max_close_position_in_range=args.seed_max_close_position_in_range,
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
         baseline_seed=args.baseline_seed,
     )
+
+
+def _scan_config_kwargs(args: argparse.Namespace) -> dict:
+    return {
+        "efficiency_percentiles": args.efficiency_percentile,
+        "signal_mode": args.signal_mode,
+        "min_move_units": args.min_move_unit,
+        "min_volume_units": args.min_volume_unit,
+        "min_close_positions": args.min_close_position,
+        "min_body_ratios": args.min_body_ratio,
+        "seed_efficiency_lookback": args.seed_efficiency_lookback,
+        "seed_min_efficiency_ratio_to_max": args.seed_min_efficiency_ratio_to_max,
+        "seed_min_efficiency_ratio_to_mean": args.seed_min_efficiency_ratio_to_mean,
+        "seed_max_volume_unit": args.seed_max_volume_unit,
+        "seed_bottom_lookback": args.seed_bottom_lookback,
+        "seed_max_close_position_in_range": args.seed_max_close_position_in_range,
+        "fee_bps": args.fee_bps,
+        "slippage_bps": args.slippage_bps,
+        "baseline_seed": args.baseline_seed,
+    }
+
+
+def _run_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     features = compute_features(arrays, config)
@@ -150,6 +181,16 @@ def _parse_float_grid(value: str) -> tuple[float, ...]:
     return parsed
 
 
+def _parse_int_grid(value: str) -> tuple[int, ...]:
+    try:
+        parsed = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not parsed:
+        raise argparse.ArgumentTypeError("grid must contain at least one value")
+    return parsed
+
+
 def _parse_string_grid(value: str) -> tuple[str, ...]:
     parsed = tuple(item.strip() for item in value.split(",") if item.strip())
     if not parsed:
@@ -173,16 +214,7 @@ def _validate_atr_multiplier_grid(values: tuple[float, ...]) -> tuple[float, ...
 
 def _scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    configs = build_scan_configs(
-        efficiency_percentiles=args.efficiency_percentile,
-        min_move_units=args.min_move_unit,
-        min_volume_units=args.min_volume_unit,
-        min_close_positions=args.min_close_position,
-        min_body_ratios=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    configs = build_scan_configs(**_scan_config_kwargs(args))
     base_config = configs[0]
     if args.ranking_horizon not in base_config.horizons:
         raise ValueError("ranking_horizon must be one of the configured horizons")
@@ -257,20 +289,7 @@ def _scan_command(args: argparse.Namespace) -> Path:
 def _trail_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     atr_multiplier = _validate_atr_multiplier(args.atr_multiplier)
-    config = VolumePriceEfficiencyConfig(
-        atr_window=args.atr_window,
-        volume_window=args.volume_window,
-        efficiency_lookback=args.efficiency_lookback,
-        efficiency_percentile=args.efficiency_percentile,
-        volume_floor=args.volume_floor,
-        min_move_unit=args.min_move_unit,
-        min_volume_unit=args.min_volume_unit,
-        min_close_position=args.min_close_position,
-        min_body_ratio=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     _research_arrays, holdout_arrays, data_split = split_research_and_holdout(
@@ -321,16 +340,7 @@ def _trail_command(args: argparse.Namespace) -> Path:
 def _trail_scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
-    configs = build_scan_configs(
-        efficiency_percentiles=args.efficiency_percentile,
-        min_move_units=args.min_move_unit,
-        min_volume_units=args.min_volume_unit,
-        min_close_positions=args.min_close_position,
-        min_body_ratios=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    configs = build_scan_configs(**_scan_config_kwargs(args))
     base_config = configs[0]
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=base_config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
@@ -403,20 +413,7 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
 def _trail_diagnose_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     atr_multiplier = _validate_atr_multiplier(args.atr_multiplier)
-    config = VolumePriceEfficiencyConfig(
-        atr_window=args.atr_window,
-        volume_window=args.volume_window,
-        efficiency_lookback=args.efficiency_lookback,
-        efficiency_percentile=args.efficiency_percentile,
-        volume_floor=args.volume_floor,
-        min_move_unit=args.min_move_unit,
-        min_volume_unit=args.min_volume_unit,
-        min_close_position=args.min_close_position,
-        min_body_ratio=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     research_arrays, holdout_arrays, data_split = split_research_and_holdout(
@@ -525,16 +522,7 @@ def _signal_features(
 def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
-    configs = build_scan_configs(
-        efficiency_percentiles=args.efficiency_percentile,
-        min_move_units=args.min_move_unit,
-        min_volume_units=args.min_volume_unit,
-        min_close_positions=args.min_close_position,
-        min_body_ratios=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    configs = build_scan_configs(**_scan_config_kwargs(args))
     base_config = configs[0]
     config_by_hash = {config.config_hash(): config for config in configs}
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=base_config.fill_policy)
@@ -673,20 +661,7 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
 def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
-    config = VolumePriceEfficiencyConfig(
-        atr_window=args.atr_window,
-        volume_window=args.volume_window,
-        efficiency_lookback=args.efficiency_lookback,
-        efficiency_percentile=args.efficiency_percentile,
-        volume_floor=args.volume_floor,
-        min_move_unit=args.min_move_unit,
-        min_volume_unit=args.min_volume_unit,
-        min_close_position=args.min_close_position,
-        min_body_ratio=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     research_arrays, _holdout_arrays, data_split = split_research_and_holdout(
@@ -979,20 +954,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
     if args.combo_min_single_outperformance_splits < 0:
         raise ValueError("combo_min_single_outperformance_splits must be non-negative")
 
-    config = VolumePriceEfficiencyConfig(
-        atr_window=args.atr_window,
-        volume_window=args.volume_window,
-        efficiency_lookback=args.efficiency_lookback,
-        efficiency_percentile=args.efficiency_percentile,
-        volume_floor=args.volume_floor,
-        min_move_unit=args.min_move_unit,
-        min_volume_unit=args.min_volume_unit,
-        min_close_position=args.min_close_position,
-        min_body_ratio=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     research_arrays, holdout_arrays, data_split = split_research_and_holdout(
@@ -1218,20 +1180,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         raise ValueError("combo_min_component_outperformance_splits must be non-negative")
     if args.combo_min_single_outperformance_splits < 0:
         raise ValueError("combo_min_single_outperformance_splits must be non-negative")
-    config = VolumePriceEfficiencyConfig(
-        atr_window=args.atr_window,
-        volume_window=args.volume_window,
-        efficiency_lookback=args.efficiency_lookback,
-        efficiency_percentile=args.efficiency_percentile,
-        volume_floor=args.volume_floor,
-        min_move_unit=args.min_move_unit,
-        min_volume_unit=args.min_volume_unit,
-        min_close_position=args.min_close_position,
-        min_body_ratio=args.min_body_ratio,
-        fee_bps=args.fee_bps,
-        slippage_bps=args.slippage_bps,
-        baseline_seed=args.baseline_seed,
-    )
+    config = _config_from_args(args)
     table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
     arrays = prepare_ohlcv_arrays(table)
     research_arrays, _holdout_arrays, data_split = split_research_and_holdout(
@@ -1513,6 +1462,26 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _add_seed_signal_arguments(parser: argparse.ArgumentParser, *, grid: bool = False) -> None:
+    int_type = _parse_int_grid if grid else int
+    float_type = _parse_float_grid if grid else float
+
+    def default_value(value):
+        return (value,) if grid else value
+
+    parser.add_argument(
+        "--signal-mode",
+        choices=("classic", "seed_efficiency"),
+        default="classic",
+    )
+    parser.add_argument("--seed-efficiency-lookback", type=int_type, default=default_value(4))
+    parser.add_argument("--seed-min-efficiency-ratio-to-max", type=float_type, default=default_value(1.5))
+    parser.add_argument("--seed-min-efficiency-ratio-to-mean", type=float_type, default=default_value(3.0))
+    parser.add_argument("--seed-max-volume-unit", type=float_type, default=default_value(1.2))
+    parser.add_argument("--seed-bottom-lookback", type=int_type, default=default_value(30))
+    parser.add_argument("--seed-max-close-position-in-range", type=float_type, default=default_value(0.6))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run volume_price_efficiency_v1")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1532,6 +1501,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--fee-bps", type=float, default=5.0)
     run_parser.add_argument("--slippage-bps", type=float, default=5.0)
     run_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(run_parser)
     run_parser.set_defaults(func=_run_command)
 
     scan_parser = subparsers.add_parser("scan")
@@ -1546,6 +1516,7 @@ def main(argv: list[str] | None = None) -> int:
     scan_parser.add_argument("--fee-bps", type=float, default=5.0)
     scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
     scan_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(scan_parser, grid=True)
     scan_parser.add_argument("--holdout-days", type=int, default=180)
     scan_parser.add_argument("--ranking-horizon", type=int, default=30)
     scan_parser.add_argument("--top-k", type=int, default=20)
@@ -1568,6 +1539,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_parser)
     trail_parser.add_argument("--holdout-days", type=int, default=180)
     trail_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     trail_parser.set_defaults(func=_trail_command)
@@ -1588,6 +1560,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_holdout_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_regime_holdout_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_regime_holdout_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_regime_holdout_parser)
     trail_regime_holdout_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_holdout_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     trail_regime_holdout_parser.add_argument("--lookback-bars", type=int, default=30)
@@ -1646,6 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_scan_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_scan_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_scan_parser, grid=True)
     trail_scan_parser.add_argument("--holdout-days", type=int, default=180)
     trail_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_scan_parser.add_argument("--top-k", type=int, default=20)
@@ -1668,6 +1642,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_diagnose_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_diagnose_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_diagnose_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_diagnose_parser)
     trail_diagnose_parser.add_argument("--holdout-days", type=int, default=180)
     trail_diagnose_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     trail_diagnose_parser.add_argument("--lookback-bars", type=int, default=30)
@@ -1693,6 +1668,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_walk_forward_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_walk_forward_parser, grid=True)
     trail_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
     trail_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_walk_forward_parser.add_argument("--train-days", type=int, default=720)
@@ -1718,6 +1694,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_scan_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_regime_scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_regime_scan_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_regime_scan_parser)
     trail_regime_scan_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_regime_scan_parser.add_argument("--lookback-bars", type=int, default=30)
@@ -1772,6 +1749,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_walk_forward_parser.add_argument("--fee-bps", type=float, default=5.0)
     trail_regime_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_regime_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
+    _add_seed_signal_arguments(trail_regime_walk_forward_parser)
     trail_regime_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_regime_walk_forward_parser.add_argument("--lookback-bars", type=int, default=30)

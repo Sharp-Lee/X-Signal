@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+
+SignalMode = Literal["classic", "seed_efficiency"]
 
 
 class VolumePriceEfficiencyConfig(BaseModel):
@@ -16,10 +20,17 @@ class VolumePriceEfficiencyConfig(BaseModel):
     efficiency_lookback: int = 120
     efficiency_percentile: float = 0.90
     volume_floor: float = 0.2
+    signal_mode: SignalMode = "classic"
     min_move_unit: float = 0.5
     min_volume_unit: float = 0.3
     min_close_position: float = 0.7
     min_body_ratio: float = 0.4
+    seed_efficiency_lookback: int = 4
+    seed_min_efficiency_ratio_to_max: float = 1.5
+    seed_min_efficiency_ratio_to_mean: float = 3.0
+    seed_max_volume_unit: float = 1.2
+    seed_bottom_lookback: int = 30
+    seed_max_close_position_in_range: float = 0.6
     horizons: tuple[int, ...] = (1, 3, 6, 12, 30)
     fee_bps: float = 5.0
     slippage_bps: float = 5.0
@@ -58,6 +69,18 @@ class VolumePriceEfficiencyConfig(BaseModel):
             raise ValueError("min_close_position must be between 0 and 1")
         if not 0.0 <= self.min_body_ratio <= 1.0:
             raise ValueError("min_body_ratio must be between 0 and 1")
+        if self.seed_efficiency_lookback <= 0:
+            raise ValueError("seed_efficiency_lookback must be positive")
+        if self.seed_min_efficiency_ratio_to_max <= 1.0:
+            raise ValueError("seed_min_efficiency_ratio_to_max must be greater than 1")
+        if self.seed_min_efficiency_ratio_to_mean <= 1.0:
+            raise ValueError("seed_min_efficiency_ratio_to_mean must be greater than 1")
+        if self.seed_max_volume_unit <= 0.0:
+            raise ValueError("seed_max_volume_unit must be positive")
+        if self.seed_bottom_lookback <= 0:
+            raise ValueError("seed_bottom_lookback must be positive")
+        if not 0.0 <= self.seed_max_close_position_in_range <= 1.0:
+            raise ValueError("seed_max_close_position_in_range must be between 0 and 1")
         if not self.horizons or any(horizon <= 0 for horizon in self.horizons):
             raise ValueError("horizons must contain positive integers")
         if tuple(sorted(set(self.horizons))) != self.horizons:

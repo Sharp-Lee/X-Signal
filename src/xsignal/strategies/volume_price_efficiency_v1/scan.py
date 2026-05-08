@@ -22,6 +22,10 @@ DEFAULT_BUCKET_FEATURES = (
 )
 
 
+def _as_tuple(value):
+    return value if isinstance(value, tuple) else (value,)
+
+
 def _rounded(value: float | None) -> float | None:
     return None if value is None else round(float(value), 12)
 
@@ -29,10 +33,17 @@ def _rounded(value: float | None) -> float | None:
 def build_scan_configs(
     *,
     efficiency_percentiles: tuple[float, ...],
+    signal_mode: str = "classic",
     min_move_units: tuple[float, ...],
     min_volume_units: tuple[float, ...],
     min_close_positions: tuple[float, ...],
     min_body_ratios: tuple[float, ...],
+    seed_efficiency_lookback: int = 4,
+    seed_min_efficiency_ratio_to_max: float = 1.5,
+    seed_min_efficiency_ratio_to_mean: float = 3.0,
+    seed_max_volume_unit: float = 1.2,
+    seed_bottom_lookback: int = 30,
+    seed_max_close_position_in_range: float = 0.6,
     fee_bps: float,
     slippage_bps: float,
     baseline_seed: int,
@@ -40,10 +51,17 @@ def build_scan_configs(
     return [
         VolumePriceEfficiencyConfig(
             efficiency_percentile=efficiency_percentile,
+            signal_mode=signal_mode,
             min_move_unit=min_move_unit,
             min_volume_unit=min_volume_unit,
             min_close_position=min_close_position,
             min_body_ratio=min_body_ratio,
+            seed_efficiency_lookback=seed_efficiency_lookback_value,
+            seed_min_efficiency_ratio_to_max=seed_min_efficiency_ratio_to_max_value,
+            seed_min_efficiency_ratio_to_mean=seed_min_efficiency_ratio_to_mean_value,
+            seed_max_volume_unit=seed_max_volume_unit_value,
+            seed_bottom_lookback=seed_bottom_lookback_value,
+            seed_max_close_position_in_range=seed_max_close_position_in_range_value,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             baseline_seed=baseline_seed,
@@ -54,12 +72,24 @@ def build_scan_configs(
             min_volume_unit,
             min_close_position,
             min_body_ratio,
+            seed_efficiency_lookback_value,
+            seed_min_efficiency_ratio_to_max_value,
+            seed_min_efficiency_ratio_to_mean_value,
+            seed_max_volume_unit_value,
+            seed_bottom_lookback_value,
+            seed_max_close_position_in_range_value,
         ) in itertools.product(
             efficiency_percentiles,
             min_move_units,
             min_volume_units,
             min_close_positions,
             min_body_ratios,
+            _as_tuple(seed_efficiency_lookback),
+            _as_tuple(seed_min_efficiency_ratio_to_max),
+            _as_tuple(seed_min_efficiency_ratio_to_mean),
+            _as_tuple(seed_max_volume_unit),
+            _as_tuple(seed_bottom_lookback),
+            _as_tuple(seed_max_close_position_in_range),
         )
     ]
 
@@ -78,10 +108,17 @@ def build_scan_row(
         "scan_id": scan_id,
         "config_hash": config.config_hash(),
         "efficiency_percentile": config.efficiency_percentile,
+        "signal_mode": config.signal_mode,
         "min_move_unit": config.min_move_unit,
         "min_volume_unit": config.min_volume_unit,
         "min_close_position": config.min_close_position,
         "min_body_ratio": config.min_body_ratio,
+        "seed_efficiency_lookback": config.seed_efficiency_lookback,
+        "seed_min_efficiency_ratio_to_max": config.seed_min_efficiency_ratio_to_max,
+        "seed_min_efficiency_ratio_to_mean": config.seed_min_efficiency_ratio_to_mean,
+        "seed_max_volume_unit": config.seed_max_volume_unit,
+        "seed_bottom_lookback": config.seed_bottom_lookback,
+        "seed_max_close_position_in_range": config.seed_max_close_position_in_range,
         "fee_bps": config.fee_bps,
         "slippage_bps": config.slippage_bps,
         "baseline_seed": config.baseline_seed,
