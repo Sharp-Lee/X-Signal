@@ -268,8 +268,11 @@ equity curves.
 Rules:
 
 - Fetch available USDT balance and account equity during each sizing pass.
-- Compute order notional from current strategy equity, so realized profits and
-  losses compound into later entries.
+- Strategy equity for sizing is the current shared USDT equity assigned to this
+  strategy, including realized PnL and unrealized PnL from strategy-owned open
+  positions.
+- Compute order notional from current strategy equity, so profits and losses
+  compound into later entries.
 - Reserve capital already committed to open strategy positions before sizing a
   new entry.
 - Pyramid adds use the same shared pool and must pass the same risk checks as
@@ -339,8 +342,12 @@ order ids so retries are idempotent.
 Client order id shape:
 
 ```text
-XSIG-VPE1-<env>-<symbol>-<intent>-<position_id>-<seq>
+XV1<env><intent><symbol-code><position-code><seq>
 ```
+
+The id must be deterministic and no longer than Binance's 36-character
+`newClientOrderId` limit. Human-readable details live in `order_intents` and
+`orders`; the exchange id is a compact idempotency key.
 
 ## Stop Logic
 
@@ -353,7 +360,7 @@ Live rule:
 - Initial stop after entry: `entry_price - 3 * atr_at_signal`.
 - Daily trailing candidate: `highest_high_since_entry - 3 * current_atr`.
 - Stop can move upward only.
-- Protective stop order: USD-M Futures algo `STOP_MARKET`.
+- Protective stop order: USD-M Futures conditional `STOP_MARKET`.
 - Stop side: `SELL`.
 - One-way position side: `BOTH`.
 - Stop trigger source: `CONTRACT_PRICE`, matching the trade-price candles used
@@ -362,12 +369,15 @@ Live rule:
   long after entry and after the pyramid add.
 - `reduceOnly` and explicit `quantity` are not sent with the close-position
   stop.
-- Stop replacement must be done with cancel-and-replace semantics that never
-  leaves the position unprotected longer than necessary.
-- If cancel succeeds but new stop placement fails, retry up to three times over
-  30 seconds.
-- If no valid active stop exists after those retries, submit a market emergency
-  exit for the current long quantity, mark the symbol `ERROR_LOCKED`, and alert.
+- Stop replacement is protective-first when Binance permits it: place the new
+  higher close-position stop, confirm it is active, then cancel the older lower
+  stop.
+- If Binance rejects parallel close-position stops on testnet, fall back to
+  cancel-then-place with an emergency policy: place the replacement immediately,
+  retry up to three times over 30 seconds, and market-exit if no valid active
+  stop exists after those retries.
+- If replacement fails while the old stop is still active, keep the old stop,
+  mark the symbol `ERROR_LOCKED`, and alert instead of removing protection.
 
 These parameters must still be verified on Binance testnet before production
 trading, but they are fixed for the first implementation plan.
