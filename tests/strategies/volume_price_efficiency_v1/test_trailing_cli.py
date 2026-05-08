@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from xsignal.strategies.volume_price_efficiency_v1.cli import main
@@ -1363,3 +1364,112 @@ def test_cli_trail_regime_walk_forward_refuses_non_offline_mode(tmp_path):
         assert exc.code == 2
     else:
         raise AssertionError("non-offline trail-regime-walk-forward should fail")
+
+
+def test_cli_trail_regime_diagnose_writes_combo_diagnostics(tmp_path, monkeypatch):
+    base = tmp_path / "strategies" / "volume_price_efficiency_v1" / "trailing_regime_walk_forwards"
+    source_dir = base / "default-single"
+    combo_dir = base / "allow-combo"
+    source_dir.mkdir(parents=True)
+    combo_dir.mkdir(parents=True)
+    (source_dir / "manifest.json").write_text(json.dumps({"regime_walk_forward_id": "default-single"}))
+    (combo_dir / "manifest.json").write_text(json.dumps({"regime_walk_forward_id": "allow-combo"}))
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50",
+                    "component_count": 1,
+                    "score": 0.03,
+                    "trade_count": 120,
+                },
+                {
+                    "fold_index": 0,
+                    "rule_id": "volume_unit_gte_p50",
+                    "component_count": 1,
+                    "score": 0.02,
+                    "trade_count": 100,
+                },
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50__and__volume_unit_gte_p50",
+                    "component_count": 2,
+                    "component_rule_ids": json.dumps(
+                        ["move_unit_gte_p50", "volume_unit_gte_p50"]
+                    ),
+                    "score": 0.04,
+                    "trade_count": 70,
+                },
+            ]
+        ),
+        source_dir / "selection_summary.parquet",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50",
+                    "component_count": 1,
+                    "train_score": 0.03,
+                    "validation_score": 0.01,
+                    "validation_total_return": 0.02,
+                    "validation_max_drawdown": 0.01,
+                    "validation_trade_count": 12,
+                }
+            ]
+        ),
+        source_dir / "fold_summary.parquet",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50__and__volume_unit_gte_p50",
+                    "component_count": 2,
+                    "component_rule_ids": json.dumps(
+                        ["move_unit_gte_p50", "volume_unit_gte_p50"]
+                    ),
+                    "train_score": 0.05,
+                    "validation_score": -0.02,
+                    "validation_total_return": -0.01,
+                    "validation_max_drawdown": 0.03,
+                    "validation_trade_count": 8,
+                }
+            ]
+        ),
+        combo_dir / "fold_summary.parquet",
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-diagnose",
+            "--root",
+            str(tmp_path),
+            "--diagnostic-id",
+            "diag",
+            "--regime-walk-forward-id",
+            "default-single",
+            "--combo-selection-regime-walk-forward-id",
+            "allow-combo",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_regime_diagnostics"
+        / "diag"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    candidate_rows = pq.read_table(output_dir / "combo_candidate_diagnostics.parquet").to_pylist()
+    comparison_rows = pq.read_table(output_dir / "selected_rule_comparison.parquet").to_pylist()
+    assert exit_code == 0
+    assert manifest["source_regime_walk_forward_id"] == "default-single"
+    assert manifest["combo_selection_regime_walk_forward_id"] == "allow-combo"
+    assert candidate_rows[0]["score_lift_vs_best_component"] == 0.01
+    assert comparison_rows[0]["validation_score_delta"] == -0.03
