@@ -148,13 +148,13 @@ windows are excluded instead of merely penalized.
 
 ## Volume Price Efficiency V1
 
-Run the 4h volume-price-efficiency event study in fully offline mode:
+Run the daily volume-price-efficiency event study in fully offline mode:
 
 ```bash
 xsignal-vpe-v1 run --root data --offline --run-id smoke-vpe-v1
 ```
 
-The event study consumes canonical `4h` raw bars, detects unusually efficient
+The event study consumes canonical `1d` raw bars, detects unusually efficient
 upward candles, samples matched non-signal baseline candles, and writes:
 
 ```text
@@ -235,7 +235,7 @@ xsignal-vpe-v1 trail --root data --offline --run-id vpe-trailing-holdout
 
 This is separate from the scan phase: it uses the chosen signal settings,
 reserves the latest 180 days by default, trades only that holdout window, enters
-on the next 4h open after a signal, locks each symbol independently while a
+on the next daily open after a signal, locks each symbol independently while a
 position is open, and exits at a 2 ATR trailing stop.
 
 Expected trailing outputs:

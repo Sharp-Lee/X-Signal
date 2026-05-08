@@ -19,7 +19,7 @@ def _arrays(close_values=None, open_values=None) -> OhlcvArrays:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return OhlcvArrays(
         symbols=("BTCUSDT",),
-        open_times=np.array([start + timedelta(hours=4 * i) for i in range(row_count)], dtype=object),
+        open_times=np.array([start + timedelta(days=i) for i in range(row_count)], dtype=object),
         open=np.array(open_values, dtype=np.float64).reshape(row_count, 1),
         high=np.array([value + 2 for value in close_values], dtype=np.float64).reshape(row_count, 1),
         low=np.array([value - 2 for value in close_values], dtype=np.float64).reshape(row_count, 1),
@@ -57,9 +57,9 @@ def test_signal_event_enters_next_open_and_uses_forward_close():
     assert len(events) == 1
     event = events[0]
     assert event["symbol"] == "BTCUSDT"
-    assert event["signal_open_time"] == "2026-01-01T04:00:00+00:00"
-    assert event["decision_time"] == "2026-01-01T08:00:00+00:00"
-    assert event["entry_open_time"] == "2026-01-01T08:00:00+00:00"
+    assert event["signal_open_time"] == "2026-01-02T00:00:00+00:00"
+    assert event["decision_time"] == "2026-01-03T00:00:00+00:00"
+    assert event["entry_open_time"] == "2026-01-03T00:00:00+00:00"
     assert event["entry_price"] == 121.0
     assert event["forward_return_1"] == 120.0 / 121.0 - 1.0
     assert event["forward_return_3"] == 140.0 / 121.0 - 1.0

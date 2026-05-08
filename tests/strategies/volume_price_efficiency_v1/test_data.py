@@ -28,8 +28,8 @@ def _row(
     low: float = 95.0,
     close: float = 103.0,
     quote_volume: float = 1_000_000.0,
-    bar_count: int = 240,
-    expected_1m_count: int = 240,
+    bar_count: int = 1440,
+    expected_1m_count: int = 1440,
     is_complete=True,
     has_synthetic=False,
     fill_policy: str = "raw",
@@ -50,13 +50,12 @@ def _row(
     }
 
 
-def write_4h_manifested_partition(
+def write_1d_manifested_partition(
     tmp_path: Path,
     rows: list[dict],
     *,
     year: int = 2026,
-    month: int = 1,
-    timeframe: str = "4h",
+    timeframe: str = "1d",
     fill_policy: str = "raw",
 ) -> Path:
     partition_dir = (
@@ -65,7 +64,6 @@ def write_4h_manifested_partition(
         / f"timeframe={timeframe}"
         / f"fill_policy={fill_policy}"
         / f"year={year:04d}"
-        / f"month={month:02d}"
     )
     partition_dir.mkdir(parents=True)
     parquet_path = partition_dir / "bars.abc.parquet"
@@ -87,7 +85,7 @@ def write_4h_manifested_partition(
 
 def test_load_manifested_table_validates_identity_and_columns(tmp_path):
     first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    manifest_path = write_4h_manifested_partition(
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", first_time), _row("ETHUSDT", first_time)],
     )
@@ -95,7 +93,7 @@ def test_load_manifested_table_validates_identity_and_columns(tmp_path):
     loaded = load_manifested_table(manifest_path)
 
     assert isinstance(loaded, CanonicalOhlcvTable)
-    assert loaded.timeframe == "4h"
+    assert loaded.timeframe == "1d"
     assert loaded.fill_policy == "raw"
     assert loaded.manifest_path == manifest_path
     assert loaded.table.num_rows == 2
@@ -104,7 +102,7 @@ def test_load_manifested_table_validates_identity_and_columns(tmp_path):
 
 def test_load_manifested_table_normalizes_epoch_seconds_open_time(tmp_path):
     first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    manifest_path = write_4h_manifested_partition(
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", int(first_time.timestamp()))],
     )
@@ -116,7 +114,7 @@ def test_load_manifested_table_normalizes_epoch_seconds_open_time(tmp_path):
 
 
 def test_load_manifested_table_rejects_missing_required_ohlcv_column(tmp_path):
-    manifest_path = write_4h_manifested_partition(
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", datetime(2026, 1, 1, tzinfo=timezone.utc))],
     )
@@ -128,10 +126,10 @@ def test_load_manifested_table_rejects_missing_required_ohlcv_column(tmp_path):
 
 
 def test_load_manifested_table_rejects_manifest_mismatch(tmp_path):
-    manifest_path = write_4h_manifested_partition(
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", datetime(2026, 1, 1, tzinfo=timezone.utc))],
-        timeframe="1h",
+        timeframe="4h",
     )
 
     with pytest.raises(ValueError, match="timeframe"):
@@ -140,8 +138,8 @@ def test_load_manifested_table_rejects_manifest_mismatch(tmp_path):
 
 def test_prepare_ohlcv_arrays_aligns_symbols_times_and_quality(tmp_path):
     first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    second_time = datetime(2026, 1, 1, 4, tzinfo=timezone.utc)
-    manifest_path = write_4h_manifested_partition(
+    second_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [
             _row("ETHUSDT", second_time, open_=200.0, high=210.0, low=195.0, close=205.0),
@@ -167,7 +165,7 @@ def test_prepare_ohlcv_arrays_aligns_symbols_times_and_quality(tmp_path):
 
 def test_prepare_ohlcv_arrays_marks_invalid_ohlc_as_bad_quality(tmp_path):
     first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    manifest_path = write_4h_manifested_partition(
+    manifest_path = write_1d_manifested_partition(
         tmp_path,
         [
             _row("BTCUSDT", first_time, high=99.0, low=95.0, open_=100.0, close=98.0),
@@ -183,18 +181,18 @@ def test_prepare_ohlcv_arrays_marks_invalid_ohlc_as_bad_quality(tmp_path):
     assert arrays.quality.tolist() == [[False, False, False]]
 
 
-def test_load_offline_ohlcv_table_reads_all_4h_manifests(tmp_path):
+def test_load_offline_ohlcv_table_reads_all_1d_manifests(tmp_path):
     first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    second_time = datetime(2026, 2, 1, tzinfo=timezone.utc)
-    first_manifest = write_4h_manifested_partition(
+    second_time = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    first_manifest = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", first_time)],
-        month=1,
+        year=2026,
     )
-    second_manifest = write_4h_manifested_partition(
+    second_manifest = write_1d_manifested_partition(
         tmp_path,
         [_row("BTCUSDT", second_time)],
-        month=2,
+        year=2027,
     )
 
     manifest_paths = collect_offline_manifest_paths(tmp_path)
@@ -205,6 +203,6 @@ def test_load_offline_ohlcv_table_reads_all_4h_manifests(tmp_path):
     assert loaded.table.num_rows == 2
 
 
-def test_collect_offline_manifest_paths_rejects_missing_4h_data(tmp_path):
-    with pytest.raises(ValueError, match="4h"):
+def test_collect_offline_manifest_paths_rejects_missing_1d_data(tmp_path):
+    with pytest.raises(ValueError, match="1d"):
         collect_offline_manifest_paths(tmp_path)

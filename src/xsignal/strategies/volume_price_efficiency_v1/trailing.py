@@ -46,7 +46,7 @@ def _as_float_or_none(value: float) -> float | None:
 def _timeframe_delta(arrays: OhlcvArrays) -> timedelta:
     if len(arrays.open_times) >= 2:
         return arrays.open_times[1] - arrays.open_times[0]
-    return timedelta(hours=4)
+    return timedelta(days=1)
 
 
 def _valid_entry_open(arrays: OhlcvArrays, entry_index: int, s_index: int) -> bool:
