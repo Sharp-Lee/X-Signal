@@ -144,6 +144,14 @@ def _signal_keep_rate(base_signal_count: int, filtered_signal_count: int) -> flo
     return filtered_signal_count / base_signal_count
 
 
+def _atr_multiplier_grid(
+    *,
+    atr_multiplier: float,
+    atr_multipliers: tuple[float, ...] | None = None,
+) -> list[float]:
+    return [float(value) for value in (atr_multipliers or (atr_multiplier,))]
+
+
 def _rule_parts(rule: Any) -> tuple[Any, ...]:
     parts = getattr(rule, "parts", None)
     if parts is None:
@@ -409,6 +417,7 @@ def write_trailing_scan_artifacts(
     data_split: dict[str, Any],
     atr_multiplier: float,
     min_trades: int,
+    atr_multipliers: tuple[float, ...] | None = None,
 ) -> Path:
     scan_dir = paths.trailing_scan_dir(scan_id)
     scan_dir.mkdir(parents=True, exist_ok=True)
@@ -431,6 +440,10 @@ def write_trailing_scan_artifacts(
         "base_config": base_config.model_dump(mode="json"),
         "base_config_hash": base_config.config_hash(),
         "atr_multiplier": atr_multiplier,
+        "atr_multipliers": _atr_multiplier_grid(
+            atr_multiplier=atr_multiplier,
+            atr_multipliers=atr_multipliers,
+        ),
         "min_trades": min_trades,
         "canonical_manifests": canonical_manifests,
         "symbol_count": symbol_count,

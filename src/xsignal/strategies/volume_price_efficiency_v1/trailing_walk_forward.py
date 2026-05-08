@@ -206,6 +206,7 @@ def build_walk_forward_fold_row(
         "validation_final_equity": _rounded(validation.get("final_equity")),
         "validation_total_return": _rounded(validation.get("total_return")),
         "validation_max_drawdown": _rounded(validation.get("max_drawdown")),
+        "atr_multiplier": train.get("atr_multiplier"),
     }
     if selected_config is not None:
         row.update(
@@ -241,6 +242,7 @@ def write_trailing_walk_forward_artifacts(
     test_days: int,
     step_days: int,
     min_trades: int,
+    atr_multipliers: tuple[float, ...] | None = None,
 ) -> Path:
     output_dir = paths.trailing_walk_forward_dir(walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -254,6 +256,7 @@ def write_trailing_walk_forward_artifacts(
         "base_config": base_config.model_dump(mode="json"),
         "base_config_hash": base_config.config_hash(),
         "atr_multiplier": atr_multiplier,
+        "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
         "train_days": train_days,
         "test_days": test_days,
         "step_days": step_days,
