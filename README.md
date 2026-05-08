@@ -285,6 +285,13 @@ export BINANCE_API_KEY=...
 export BINANCE_SECRET_KEY=...
 ```
 
+Or keep them in the local ignored file `.secrets/binance-testnet.env`:
+
+```bash
+BINANCE_API_KEY=...
+BINANCE_SECRET_KEY=...
+```
+
 Run a read-only testnet smoke check:
 
 ```bash
@@ -302,4 +309,19 @@ xsignal-vpe-live testnet-smoke \
 
 `--submit-test-order` uses Binance `/fapi/v1/order/test`; it validates signed
 order payloads but does not create a live position. Real testnet lifecycle
-trading is the next phase.
+trading requires a separate acknowledgement because it enters the Binance
+testnet matching engine:
+
+```bash
+xsignal-vpe-live testnet-lifecycle \
+  --symbol BTCUSDT \
+  --quantity 0.001 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+`--stop-offset-pct 0.05` means a 5% protective stop offset for this smoke run.
+The command opens a tiny testnet long, places a `STOP_MARKET closePosition=true`
+protection order, verifies the position and stop, cancels the stop, closes with
+a reduce-only market sell, and verifies the symbol is flat again. Production
+trading remains disabled.

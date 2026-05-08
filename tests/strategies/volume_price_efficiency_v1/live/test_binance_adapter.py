@@ -108,6 +108,21 @@ def test_broker_maps_position_and_multi_asset_modes():
     assert broker.get_multi_assets_mode() == "single_asset_usdt"
 
 
+def test_broker_fetches_symbol_metadata_from_exchange_info():
+    class ExchangeInfoRestClient(FakeRestClient):
+        def request(self, method, path, *, signed=False, params=None):
+            super().request(method, path, signed=signed, params=params)
+            return {"symbols": [_symbol_payload(symbol="ETHUSDT"), _symbol_payload()]}
+
+    broker = BinanceUsdFuturesTestnetBroker(ExchangeInfoRestClient())
+
+    metadata = broker.get_symbol_metadata("BTCUSDT")
+
+    assert metadata.symbol == "BTCUSDT"
+    assert metadata.price_tick == 0.1
+    assert metadata.quantity_step == 0.001
+
+
 def test_broker_changes_margin_type_and_leverage():
     rest_client = FakeRestClient()
     broker = BinanceUsdFuturesTestnetBroker(rest_client)
@@ -159,23 +174,24 @@ def test_broker_places_stop_market_close_without_quantity():
 
     broker.place_stop_market_close(
         symbol="BTCUSDT",
-        stop_price=90.5,
+        stop_price=90.100000000006,
         client_order_id="XV1TSBTC123",
     )
 
     assert rest_client.calls == [
         (
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             True,
             {
+                "algoType": "CONDITIONAL",
                 "symbol": "BTCUSDT",
                 "side": "SELL",
                 "type": "STOP_MARKET",
-                "stopPrice": "90.5",
+                "triggerPrice": "90.1",
                 "closePosition": "true",
                 "workingType": "CONTRACT_PRICE",
-                "newClientOrderId": "XV1TSBTC123",
+                "clientAlgoId": "XV1TSBTC123",
                 "positionSide": "BOTH",
             },
         )
@@ -198,9 +214,9 @@ def test_broker_cancels_and_validates_test_order():
     assert rest_client.calls == [
         (
             "DELETE",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             True,
-            {"symbol": "BTCUSDT", "origClientOrderId": "XV1TSBTC123"},
+            {"clientAlgoId": "XV1TSBTC123"},
         ),
         (
             "POST",
@@ -235,13 +251,13 @@ def test_broker_queries_position_risk_and_open_orders():
         ),
         (
             "GET",
-            "/fapi/v1/openOrder",
+            "/fapi/v1/algoOrder",
             True,
-            {"symbol": "BTCUSDT", "origClientOrderId": "XV1TSBTC123"},
+            {"clientAlgoId": "XV1TSBTC123"},
         ),
         (
             "GET",
-            "/fapi/v1/openOrders",
+            "/fapi/v1/openAlgoOrders",
             True,
             {"symbol": "BTCUSDT"},
         ),

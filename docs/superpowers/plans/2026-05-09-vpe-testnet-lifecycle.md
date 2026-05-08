@@ -16,13 +16,13 @@
 - Modify: `src/xsignal/strategies/volume_price_efficiency_v1/live/binance_adapter.py`
 - Modify: `tests/strategies/volume_price_efficiency_v1/live/test_binance_adapter.py`
 
-- [ ] Add failing tests for `get_position_risk`, `get_open_order`, `get_open_orders`, and `market_sell_reduce_only`.
-- [ ] Implement methods using official endpoints:
+- [x] Add failing tests for `get_position_risk`, `get_open_order`, `get_open_orders`, and `market_sell_reduce_only`.
+- [x] Implement methods using official endpoints:
   - `GET /fapi/v3/positionRisk`
   - `GET /fapi/v1/openOrder`
   - `GET /fapi/v1/openOrders`
   - `POST /fapi/v1/order` with `SELL`, `MARKET`, `reduceOnly=true`
-- [ ] Run adapter tests and commit.
+- [x] Run adapter tests and commit.
 
 ### Task 2: Lifecycle Orchestrator
 
@@ -30,9 +30,9 @@
 - Create: `src/xsignal/strategies/volume_price_efficiency_v1/live/testnet_lifecycle.py`
 - Test: `tests/strategies/volume_price_efficiency_v1/live/test_testnet_lifecycle.py`
 
-- [ ] Add failing tests for success path using a fake broker.
-- [ ] Add failing tests that cleanup attempts to cancel stop and close position when a later step fails.
-- [ ] Implement `run_testnet_lifecycle()` with:
+- [x] Add failing tests for success path using a fake broker.
+- [x] Add failing tests that cleanup attempts to cancel stop and close position when a later step fails.
+- [x] Implement `run_testnet_lifecycle()` with:
   - set isolated margin and 1x leverage
   - market buy
   - place `STOP_MARKET closePosition=true`
@@ -41,7 +41,7 @@
   - cancel stop
   - market sell reduce-only
   - verify position amount returns to zero
-- [ ] Run lifecycle tests and commit.
+- [x] Run lifecycle tests and commit.
 
 ### Task 3: Guarded CLI And Real Testnet Smoke
 
@@ -50,13 +50,13 @@
 - Modify: `README.md`
 - Test: `tests/strategies/volume_price_efficiency_v1/live/test_binance_cli.py`
 
-- [ ] Add `testnet-lifecycle` parser tests.
-- [ ] Require `--i-understand-testnet-order`.
-- [ ] Load `.secrets/binance-testnet.env` when present, without printing secrets.
-- [ ] Run unit tests, full tests, ruff.
-- [ ] Run real command with the local testnet key:
+- [x] Add `testnet-lifecycle` parser tests.
+- [x] Require `--i-understand-testnet-order`.
+- [x] Load `.secrets/binance-testnet.env` when present, without printing secrets.
+- [x] Run unit tests, full tests, ruff.
+- [x] Run real command with the local testnet key:
   - `xsignal-vpe-live testnet-lifecycle --symbol BTCUSDT --quantity 0.001 --stop-offset-pct 0.05 --i-understand-testnet-order`
-- [ ] Confirm command exits zero and reports final position amount `0`.
+- [x] Confirm command exits zero and reports final position amount `0`.
 - [ ] Commit and merge to `main`.
 
 ## Self-Review

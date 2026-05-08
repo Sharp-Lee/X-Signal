@@ -61,7 +61,7 @@ class FakeLifecycleBroker:
 
     def get_open_order(self, *, symbol, client_order_id):
         self.calls.append(("get_open_order", symbol, client_order_id))
-        return {"symbol": symbol, "clientOrderId": client_order_id, "status": "NEW"}
+        return {"symbol": symbol, "clientAlgoId": client_order_id, "algoStatus": "NEW"}
 
     def cancel_order(self, *, symbol, client_order_id):
         self.calls.append(("cancel_order", symbol, client_order_id))
@@ -106,6 +106,38 @@ def test_run_testnet_lifecycle_opens_protects_closes_and_verifies_flat():
 
 def test_run_testnet_lifecycle_cleans_up_stop_and_position_after_late_failure():
     class FailingBroker(FakeLifecycleBroker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.position_risk_payloads = [
+                [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.001",
+                        "entryPrice": "100",
+                        "markPrice": "101",
+                    }
+                ],
+                [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.001",
+                        "entryPrice": "100",
+                        "markPrice": "101",
+                    }
+                ],
+                [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.001",
+                        "entryPrice": "100",
+                        "markPrice": "101",
+                    }
+                ],
+            ]
+
         def get_open_order(self, *, symbol, client_order_id):
             self.calls.append(("get_open_order", symbol, client_order_id))
             raise RuntimeError("open order check failed")
@@ -122,11 +154,119 @@ def test_run_testnet_lifecycle_cleans_up_stop_and_position_after_late_failure():
         )
 
     call_names = [call[0] for call in broker.calls]
-    assert call_names[-3:] == [
+    assert call_names[-4:] == [
         "get_open_order",
         "cancel_order",
+        "get_position_risk",
         "market_sell_reduce_only",
     ]
+
+
+def test_run_testnet_lifecycle_retries_until_position_is_visible():
+    broker = FakeLifecycleBroker()
+    broker.position_risk_payloads = [
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "entryPrice": "0",
+                "markPrice": "100",
+            }
+        ],
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0.001",
+                "entryPrice": "100",
+                "markPrice": "101",
+            }
+        ],
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0.001",
+                "entryPrice": "100",
+                "markPrice": "101",
+            }
+        ],
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "entryPrice": "0",
+                "markPrice": "101",
+            }
+        ],
+    ]
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+        poll_attempts=3,
+        poll_sleep_seconds=0,
+    )
+
+    assert result.opened_position_amount == pytest.approx(0.001)
+    assert [call[0] for call in broker.calls].count("get_position_risk") == 4
+
+
+def test_run_testnet_lifecycle_treats_empty_final_position_risk_as_flat():
+    broker = FakeLifecycleBroker()
+    broker.position_risk_payloads = [
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0.001",
+                "entryPrice": "100",
+                "markPrice": "101",
+            }
+        ],
+        [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0.001",
+                "entryPrice": "100",
+                "markPrice": "101",
+            }
+        ],
+        [],
+    ]
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+    )
+
+    assert result.final_position_amount == pytest.approx(0.0)
+
+
+def test_run_testnet_lifecycle_rounds_stop_price_down_to_tick():
+    broker = FakeLifecycleBroker()
+    broker.position_risk_payloads[0][0]["entryPrice"] = "100.07"
+    broker.position_risk_payloads[1][0]["entryPrice"] = "100.07"
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+        price_tick=0.1,
+    )
+
+    assert result.stop_price == pytest.approx(95.0)
 
 
 def test_run_testnet_lifecycle_treats_already_isolated_margin_as_success():
