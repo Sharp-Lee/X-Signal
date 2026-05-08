@@ -67,6 +67,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_walk_forward import 
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     DEFAULT_REGIME_FEATURES,
     apply_regime_filter_rule,
+    build_composite_regime_filter_rules,
     build_regime_filter_rules,
     build_regime_scan_row,
     build_regime_value_arrays,
@@ -834,6 +835,12 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         raise ValueError("stability_min_trades must be non-negative")
     if args.stability_min_positive_splits < 0:
         raise ValueError("stability_min_positive_splits must be non-negative")
+    if args.max_rule_size <= 0:
+        raise ValueError("max_rule_size must be positive")
+    if args.max_rule_size > 2:
+        raise ValueError("max_rule_size currently supports at most 2")
+    if args.combo_seed_top_k <= 0:
+        raise ValueError("combo_seed_top_k must be positive")
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -892,7 +899,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         rule_by_id = {rule.rule_id: rule for rule in train_rules}
         train_base_signal_count = int(train_features.signal.sum())
         train_rows = []
-        for rule in train_rules:
+
+        def evaluate_train_rule(rule):
             filtered_train_signal = apply_regime_filter_rule(
                 train_features.signal,
                 train_values,
@@ -968,18 +976,42 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                         min_trades=stability_min_trades,
                     )
                 )
-            train_rows.append(row)
+            return row
+
+        for rule in train_rules:
+            train_rows.append(evaluate_train_rule(rule))
+
+        if args.max_rule_size > 1:
+            seed_rows = select_top_regime_filters(
+                train_rows,
+                top_k=args.combo_seed_top_k,
+                min_trades=args.min_trades,
+            )
+            seed_rules = tuple(rule_by_id[str(row["rule_id"])] for row in seed_rows)
+            combo_rules = build_composite_regime_filter_rules(
+                seed_rules,
+                combo_size=args.max_rule_size,
+            )
+            for rule in combo_rules:
+                rule_by_id[rule.rule_id] = rule
+                train_rows.append(evaluate_train_rule(rule))
+
+        selection_candidate_rows = train_rows
+        if not args.allow_combo_selection:
+            selection_candidate_rows = [
+                row for row in train_rows if int(row.get("component_count") or 0) <= 1
+            ]
 
         if args.stability_splits > 1:
             selected = select_stable_regime_filters(
-                train_rows,
+                selection_candidate_rows,
                 top_k=1,
                 min_trades=args.min_trades,
                 stability_min_positive_splits=stability_min_positive_splits,
             )
         else:
             selected = select_top_regime_filters(
-                train_rows,
+                selection_candidate_rows,
                 top_k=1,
                 min_trades=args.min_trades,
             )
@@ -1081,6 +1113,9 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         stability_splits=args.stability_splits,
         stability_min_trades=stability_min_trades,
         stability_min_positive_splits=stability_min_positive_splits,
+        max_rule_size=args.max_rule_size,
+        combo_seed_top_k=args.combo_seed_top_k,
+        allow_combo_selection=args.allow_combo_selection,
         quantiles=args.quantile,
         feature_names=args.feature_name,
     )
@@ -1282,6 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     trail_regime_walk_forward_parser.add_argument("--top-k", type=int, default=20)
     trail_regime_walk_forward_parser.add_argument("--min-trades", type=int, default=200)
+    trail_regime_walk_forward_parser.add_argument("--max-rule-size", type=int, default=1)
+    trail_regime_walk_forward_parser.add_argument("--combo-seed-top-k", type=int, default=12)
+    trail_regime_walk_forward_parser.add_argument("--allow-combo-selection", action="store_true")
     trail_regime_walk_forward_parser.add_argument("--stability-splits", type=int, default=1)
     trail_regime_walk_forward_parser.add_argument("--stability-min-trades", type=int, default=0)
     trail_regime_walk_forward_parser.add_argument(

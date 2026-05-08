@@ -21,6 +21,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing import (
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     RegimeFilterRule,
     apply_regime_filter_rule,
+    build_composite_regime_filter_rules,
     build_regime_filter_rules,
     build_regime_scan_row,
     build_regime_value_arrays,
@@ -198,6 +199,46 @@ def test_apply_regime_filter_rule_keeps_only_matching_signals():
         [False, False],
         [False, False],
         [False, True],
+        [False, True],
+    ]
+
+
+def test_composite_regime_filter_rule_combines_component_rules_with_and():
+    features = _features()
+    move_rule = RegimeFilterRule(
+        rule_id="move_unit_gte_p50",
+        feature_name="move_unit",
+        direction="gte",
+        quantile=0.5,
+        threshold=5.0,
+    )
+    volume_rule = RegimeFilterRule(
+        rule_id="volume_unit_gte_p50",
+        feature_name="volume_unit",
+        direction="gte",
+        quantile=0.5,
+        threshold=3.5,
+    )
+
+    combo = build_composite_regime_filter_rules((move_rule, volume_rule), combo_size=2)[0]
+    filtered = apply_regime_filter_rule(
+        features.signal,
+        {
+            "move_unit": features.move_unit,
+            "volume_unit": features.volume_unit,
+        },
+        combo,
+    )
+
+    assert combo.rule_id == "move_unit_gte_p50__and__volume_unit_gte_p50"
+    assert combo.feature_name == "move_unit+volume_unit"
+    assert combo.direction == "and"
+    assert combo.quantile is None
+    assert combo.threshold is None
+    assert filtered.tolist() == [
+        [False, False],
+        [False, False],
+        [False, False],
         [False, True],
     ]
 

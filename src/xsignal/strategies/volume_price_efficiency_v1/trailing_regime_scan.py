@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from itertools import combinations
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -39,8 +40,13 @@ class RegimeFilterRule:
     rule_id: str
     feature_name: str
     direction: str
-    quantile: float
-    threshold: float
+    quantile: float | None
+    threshold: float | None
+    components: tuple[RegimeFilterRule, ...] = ()
+
+    @property
+    def parts(self) -> tuple[RegimeFilterRule, ...]:
+        return self.components or (self,)
 
 
 def _json_safe(value: Any) -> Any:
@@ -330,11 +336,50 @@ def build_regime_filter_rules(
     return tuple(rules)
 
 
+def build_composite_regime_filter_rules(
+    seed_rules: tuple[RegimeFilterRule, ...],
+    *,
+    combo_size: int = 2,
+) -> tuple[RegimeFilterRule, ...]:
+    if combo_size <= 1:
+        return ()
+    if combo_size != 2:
+        raise ValueError("combo_size currently supports only 2")
+
+    rules: list[RegimeFilterRule] = []
+    seen: set[tuple[str, ...]] = set()
+    for components in combinations(seed_rules, combo_size):
+        if len({component.feature_name for component in components}) != combo_size:
+            continue
+        ordered_components = tuple(sorted(components, key=lambda component: component.rule_id))
+        key = tuple(component.rule_id for component in ordered_components)
+        if key in seen:
+            continue
+        seen.add(key)
+        rules.append(
+            RegimeFilterRule(
+                rule_id="__and__".join(key),
+                feature_name="+".join(component.feature_name for component in ordered_components),
+                direction="and",
+                quantile=None,
+                threshold=None,
+                components=ordered_components,
+            )
+        )
+    return tuple(rules)
+
+
 def apply_regime_filter_rule(
     signal: np.ndarray,
     values_by_feature: dict[str, np.ndarray],
     rule: RegimeFilterRule,
 ) -> np.ndarray:
+    if rule.components:
+        filtered = signal.copy()
+        for component in rule.components:
+            filtered = apply_regime_filter_rule(filtered, values_by_feature, component)
+        return filtered
+
     values = values_by_feature[rule.feature_name]
     if values.shape != signal.shape:
         raise ValueError("regime feature shape does not match signal shape")
@@ -345,6 +390,27 @@ def apply_regime_filter_rule(
     else:
         raise ValueError("rule direction must be gte or lt")
     return signal & keep
+
+
+def _rule_component_payload(rule: RegimeFilterRule | None) -> dict[str, Any]:
+    if rule is None:
+        return {
+            "component_count": 0,
+            "component_rule_ids": "[]",
+            "component_feature_names": "[]",
+            "component_directions": "[]",
+            "component_quantiles": "[]",
+            "component_thresholds": "[]",
+        }
+    parts = rule.parts
+    return {
+        "component_count": len(parts),
+        "component_rule_ids": json.dumps([part.rule_id for part in parts]),
+        "component_feature_names": json.dumps([part.feature_name for part in parts]),
+        "component_directions": json.dumps([part.direction for part in parts]),
+        "component_quantiles": json.dumps([part.quantile for part in parts]),
+        "component_thresholds": json.dumps([_rounded(part.threshold) for part in parts]),
+    }
 
 
 def build_regime_scan_row(
@@ -373,6 +439,7 @@ def build_regime_scan_row(
             "direction": rule.direction if rule is not None else None,
             "quantile": rule.quantile if rule is not None else None,
             "threshold": _rounded(rule.threshold if rule is not None else None),
+            **_rule_component_payload(rule),
             "base_signal_count": int(base_signal_count),
             "filtered_signal_count": int(filtered_signal_count),
             "signal_keep_rate": _rounded(
