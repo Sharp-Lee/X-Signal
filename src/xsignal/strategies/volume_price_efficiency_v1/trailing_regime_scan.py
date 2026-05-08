@@ -49,6 +49,36 @@ class RegimeFilterRule:
         return self.components or (self,)
 
 
+def _absolute_threshold_id(threshold: float) -> str:
+    scaled = abs(float(threshold) * 100.0)
+    if scaled.is_integer():
+        value = str(int(scaled))
+    else:
+        value = f"{scaled:.6f}".rstrip("0").rstrip(".").replace(".", "p")
+    sign = "minus" if threshold < 0.0 else "plus"
+    return f"abs_{sign}{value}"
+
+
+def build_fixed_regime_filter_rule(
+    *,
+    feature_name: str,
+    direction: str,
+    threshold: float,
+) -> RegimeFilterRule:
+    if not feature_name.strip():
+        raise ValueError("fixed regime feature_name must be non-empty")
+    if direction not in {"gte", "lt"}:
+        raise ValueError("fixed regime direction must be gte or lt")
+    threshold = float(threshold)
+    return RegimeFilterRule(
+        rule_id=f"{feature_name}_{direction}_{_absolute_threshold_id(threshold)}",
+        feature_name=feature_name,
+        direction=direction,
+        quantile=None,
+        threshold=threshold,
+    )
+
+
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()

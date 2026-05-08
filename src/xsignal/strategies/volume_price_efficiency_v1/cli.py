@@ -70,6 +70,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_walk_forward import 
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     DEFAULT_REGIME_FEATURES,
     apply_regime_filter_rule,
+    build_fixed_regime_filter_rule,
     build_composite_regime_filter_rules,
     build_regime_filter_rules,
     build_regime_scan_row,
@@ -243,6 +244,26 @@ def _simulate_trailing_stop_from_args(
         config,
         atr_multiplier=atr_multiplier,
         **_pyramid_kwargs(args),
+    )
+
+
+def _fixed_regime_rule_from_args(args: argparse.Namespace):
+    feature_name = getattr(args, "fixed_regime_feature_name", None)
+    direction = getattr(args, "fixed_regime_direction", None)
+    threshold = getattr(args, "fixed_regime_threshold", None)
+    supplied = (
+        feature_name is not None,
+        direction is not None,
+        threshold is not None,
+    )
+    if not any(supplied):
+        return None
+    if not all(supplied):
+        raise ValueError("fixed regime rule requires feature name, direction, and threshold")
+    return build_fixed_regime_filter_rule(
+        feature_name=feature_name,
+        direction=direction,
+        threshold=threshold,
     )
 
 
@@ -1026,12 +1047,22 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         research_features,
         lookback_bars=args.lookback_bars,
     )
-    research_rules = build_regime_filter_rules(
-        research_features.signal,
-        research_values,
-        feature_names=args.feature_name,
-        quantiles=args.quantile,
-    )
+    fixed_rule = _fixed_regime_rule_from_args(args)
+    if fixed_rule is not None:
+        if fixed_rule.feature_name not in research_values:
+            raise ValueError(f"fixed regime feature is unavailable: {fixed_rule.feature_name}")
+        research_rules = (fixed_rule,)
+        selection_scope = "fixed_cli"
+        threshold_scope = "absolute_cli"
+    else:
+        research_rules = build_regime_filter_rules(
+            research_features.signal,
+            research_values,
+            feature_names=args.feature_name,
+            quantiles=args.quantile,
+        )
+        selection_scope = "research_only"
+        threshold_scope = "full_research_signal_distribution"
     rule_by_id = {rule.rule_id: rule for rule in research_rules}
     research_base_signal_count = int(research_features.signal.sum())
     run_id = args.run_id or uuid.uuid4().hex
@@ -1066,7 +1097,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
             {
                 "run_id": run_id,
                 "data_set": "research",
-                "threshold_source": "full_research_signal_distribution",
+                "threshold_source": threshold_scope,
                 "is_selected": False,
             }
         )
@@ -1116,7 +1147,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         return row
 
     train_rows = [evaluate_train_rule(rule) for rule in research_rules]
-    if args.max_rule_size > 1:
+    if fixed_rule is None and args.max_rule_size > 1:
         seed_rows = select_top_regime_filters(
             train_rows,
             top_k=args.combo_seed_top_k,
@@ -1131,32 +1162,37 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
             rule_by_id[rule.rule_id] = rule
             train_rows.append(evaluate_train_rule(rule))
 
-    selection_candidate_rows = filter_combo_regime_candidates(
-        train_rows,
-        allow_combo_selection=args.allow_combo_selection,
-        min_score_lift_vs_best_component=args.combo_min_score_lift_vs_best_component,
-        min_score_lift_vs_best_single=args.combo_min_score_lift_vs_best_single,
-        min_component_outperformance_splits=args.combo_min_component_outperformance_splits,
-        min_single_outperformance_splits=args.combo_min_single_outperformance_splits,
-    )
-    if args.stability_splits > 1:
-        selected = select_stable_regime_filters(
-            selection_candidate_rows,
-            top_k=1,
-            min_trades=args.min_trades,
-            stability_min_positive_splits=stability_min_positive_splits,
-        )
+    if fixed_rule is not None:
+        selected_train_row = train_rows[0]
+        selected_train_row["is_selected"] = True
+        selected_rule = fixed_rule
     else:
-        selected = select_top_regime_filters(
-            selection_candidate_rows,
-            top_k=1,
-            min_trades=args.min_trades,
+        selection_candidate_rows = filter_combo_regime_candidates(
+            train_rows,
+            allow_combo_selection=args.allow_combo_selection,
+            min_score_lift_vs_best_component=args.combo_min_score_lift_vs_best_component,
+            min_score_lift_vs_best_single=args.combo_min_score_lift_vs_best_single,
+            min_component_outperformance_splits=args.combo_min_component_outperformance_splits,
+            min_single_outperformance_splits=args.combo_min_single_outperformance_splits,
         )
-    if not selected:
-        raise ValueError("no eligible research regime filter matched the selection constraints")
-    selected_train_row = selected[0]
-    selected_train_row["is_selected"] = True
-    selected_rule = rule_by_id[str(selected_train_row["rule_id"])]
+        if args.stability_splits > 1:
+            selected = select_stable_regime_filters(
+                selection_candidate_rows,
+                top_k=1,
+                min_trades=args.min_trades,
+                stability_min_positive_splits=stability_min_positive_splits,
+            )
+        else:
+            selected = select_top_regime_filters(
+                selection_candidate_rows,
+                top_k=1,
+                min_trades=args.min_trades,
+            )
+        if not selected:
+            raise ValueError("no eligible research regime filter matched the selection constraints")
+        selected_train_row = selected[0]
+        selected_train_row["is_selected"] = True
+        selected_rule = rule_by_id[str(selected_train_row["rule_id"])]
 
     full_base_features = compute_features(arrays, config)
     full_features = replace(
@@ -1209,6 +1245,8 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         holdout_filtered_signal_count=int(filtered_holdout_signal.sum()),
         pyramid_add_step_atr=args.pyramid_add_step_atr,
         pyramid_max_adds=args.pyramid_max_adds,
+        selection_scope=selection_scope,
+        threshold_scope=threshold_scope,
     )
     print(output)
     return output
@@ -1633,6 +1671,12 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_holdout_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     _add_pyramid_arguments(trail_regime_holdout_parser)
     trail_regime_holdout_parser.add_argument("--lookback-bars", type=int, default=30)
+    trail_regime_holdout_parser.add_argument("--fixed-regime-feature-name")
+    trail_regime_holdout_parser.add_argument(
+        "--fixed-regime-direction",
+        choices=("gte", "lt"),
+    )
+    trail_regime_holdout_parser.add_argument("--fixed-regime-threshold", type=float)
     trail_regime_holdout_parser.add_argument(
         "--feature-name",
         type=_parse_string_grid,

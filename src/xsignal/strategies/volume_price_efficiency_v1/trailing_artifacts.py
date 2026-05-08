@@ -185,12 +185,18 @@ def _rule_payload(rule: Any) -> dict[str, Any]:
     }
 
 
-def _selected_filter_payload(rule: Any, selected_train_row: dict[str, Any]) -> dict[str, Any]:
+def _selected_filter_payload(
+    rule: Any,
+    selected_train_row: dict[str, Any],
+    *,
+    threshold_source: str = "full_research_signal_distribution",
+    selection_scope: str = "research_only",
+) -> dict[str, Any]:
     payload = _rule_payload(rule)
     payload.update(
         {
-            "threshold_source": "full_research_signal_distribution",
-            "selection_scope": "research_only",
+            "threshold_source": threshold_source,
+            "selection_scope": selection_scope,
             "train_score": _rounded(selected_train_row.get("score")),
             "train_trade_count": selected_train_row.get("trade_count"),
             "train_base_signal_count": selected_train_row.get("base_signal_count"),
@@ -367,11 +373,18 @@ def write_trailing_regime_holdout_artifacts(
     holdout_filtered_signal_count: int,
     pyramid_add_step_atr: float | None = None,
     pyramid_max_adds: int = 0,
+    selection_scope: str = "research_only",
+    threshold_scope: str = "full_research_signal_distribution",
 ) -> Path:
     run_dir = paths.trailing_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     summary = build_trailing_summary(result)
-    selected_filter = _selected_filter_payload(selected_rule, selected_train_row)
+    selected_filter = _selected_filter_payload(
+        selected_rule,
+        selected_train_row,
+        threshold_source=threshold_scope,
+        selection_scope=selection_scope,
+    )
     holdout_signal_keep_rate = _signal_keep_rate(
         holdout_base_signal_count,
         holdout_filtered_signal_count,
@@ -381,8 +394,8 @@ def write_trailing_regime_holdout_artifacts(
         "strategy_version": "v1",
         "run_type": "trailing_stop_regime_holdout",
         "data_scope": "holdout_only_final_production_test",
-        "selection_scope": "research_only",
-        "threshold_scope": "full_research_signal_distribution",
+        "selection_scope": selection_scope,
+        "threshold_scope": threshold_scope,
         "run_id": run_id,
         "git_commit": git_commit,
         "config": config.model_dump(mode="json"),

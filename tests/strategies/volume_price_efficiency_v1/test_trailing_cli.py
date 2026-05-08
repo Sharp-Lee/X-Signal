@@ -492,6 +492,148 @@ def test_cli_trail_regime_holdout_trains_rule_on_research_then_runs_holdout(
     assert pq.read_table(run_dir / "selection_summary.parquet").num_rows == 2
 
 
+def test_cli_trail_regime_holdout_accepts_fixed_absolute_rule(tmp_path, monkeypatch):
+    all_arrays = _arrays(8)
+    research_arrays = _arrays(4)
+    holdout_arrays = _arrays(4)
+    captured = {"simulate_signal_indices": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        lambda _arrays, *, holdout_days: (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T12:00:00Z",
+                "holdout_start": "2026-01-01T16:00:00Z",
+                "holdout_end": "2026-01-02T04:00:00Z",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.holdout_mask_for_open_times",
+        lambda _open_times, *, holdout_days: np.array(
+            [False, False, False, False, True, True, True, True],
+            dtype=bool,
+        ),
+    )
+
+    def fake_features(feature_arrays, _config):
+        features = _features(feature_arrays.open.shape[0])
+        return FeatureArrays(
+            true_range=features.true_range,
+            atr=features.atr,
+            move_unit=features.move_unit,
+            volume_baseline=features.volume_baseline,
+            volume_unit=features.volume_unit,
+            efficiency=features.efficiency,
+            efficiency_threshold=features.efficiency_threshold,
+            close_position=features.close_position,
+            body_ratio=features.body_ratio,
+            signal=np.ones(feature_arrays.open.shape, dtype=bool),
+        )
+
+    def fake_regime_values(value_arrays, _features, *, lookback_bars):
+        if value_arrays.open.shape[0] == 4:
+            values = np.array([[-0.20], [-0.10], [0.0], [0.10]], dtype=np.float64)
+        else:
+            values = np.array(
+                [[-0.20], [-0.20], [-0.20], [-0.20], [-0.20], [-0.09], [0.05], [-0.11]],
+                dtype=np.float64,
+            )
+        return {"market_lookback_return": values}
+
+    def fake_simulate(sim_arrays, features, _config, *, atr_multiplier):
+        signal_indices = tuple(int(index) for index in np.flatnonzero(features.signal[:, 0]))
+        captured["simulate_signal_indices"].append(signal_indices)
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        equity = np.linspace(1.0, 1.0 + len(signal_indices) / 100.0, sim_arrays.open.shape[0])
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "signal_open_time": sim_arrays.open_times[index].isoformat(),
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+                for index in signal_indices
+            ],
+            equity=equity,
+            period_returns=equity[1:] / equity[:-1] - 1.0,
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        fake_features,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_regime_value_arrays",
+        fake_regime_values,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-holdout",
+            "--root",
+            str(tmp_path),
+            "--run-id",
+            "fixed-regime",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--atr-multiplier",
+            "3.0",
+            "--fixed-regime-feature-name",
+            "market_lookback_return",
+            "--fixed-regime-direction",
+            "gte",
+            "--fixed-regime-threshold",
+            "-0.10",
+        ]
+    )
+
+    run_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_runs"
+        / "fixed-regime"
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    selected_filter = json.loads((run_dir / "selected_filter.json").read_text())
+    assert exit_code == 0
+    assert captured["simulate_signal_indices"] == [(1, 2, 3), (1, 2)]
+    assert manifest["selection_scope"] == "fixed_cli"
+    assert manifest["threshold_scope"] == "absolute_cli"
+    assert manifest["selected_rule_id"] == "market_lookback_return_gte_abs_minus10"
+    assert selected_filter["threshold_source"] == "absolute_cli"
+    assert selected_filter["selection_scope"] == "fixed_cli"
+    assert selected_filter["threshold"] == -0.10
+
+
 def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, monkeypatch):
     arrays = _arrays(8)
     research_arrays = _arrays(5)

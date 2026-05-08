@@ -21,6 +21,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing import (
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     RegimeFilterRule,
     apply_regime_filter_rule,
+    build_fixed_regime_filter_rule,
     build_composite_regime_filter_rules,
     build_regime_filter_rules,
     build_regime_scan_row,
@@ -287,6 +288,22 @@ def test_select_top_regime_filters_filters_low_trade_counts_and_unfiltered_basel
         {"rule_id": "c", "trade_count": 11, "score": 0.04},
         {"rule_id": "b", "trade_count": 10, "score": 0.02},
     ]
+
+
+def test_build_fixed_regime_filter_rule_uses_absolute_threshold_id():
+    rule = build_fixed_regime_filter_rule(
+        feature_name="market_lookback_return",
+        direction="gte",
+        threshold=-0.10,
+    )
+
+    assert rule == RegimeFilterRule(
+        rule_id="market_lookback_return_gte_abs_minus10",
+        feature_name="market_lookback_return",
+        direction="gte",
+        quantile=None,
+        threshold=-0.10,
+    )
 
 
 def test_write_trailing_regime_scan_artifacts(tmp_path):
