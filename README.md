@@ -254,3 +254,20 @@ Expected trailing outputs:
 - `trades.parquet`
 - `equity_curve.parquet`
 - `daily_positions.parquet`
+
+## Volume Price Efficiency Live Core
+
+The first live-trading implementation phase is an offline core. It builds the
+same state machine, shared-equity sizing, risk gate, SQLite state store, and
+fake broker that will later drive Binance testnet/live trading.
+
+Run the offline CLI:
+
+```bash
+xsignal-vpe-live replay --root data --db data/live/vpe-live.sqlite
+xsignal-vpe-live status --db data/live/vpe-live.sqlite
+xsignal-vpe-live reconcile --db data/live/vpe-live.sqlite
+```
+
+Production order submission is not part of the offline core. The Binance
+testnet adapter is the next implementation plan after this core passes tests.
