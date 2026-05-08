@@ -9,7 +9,7 @@ class VolumePriceEfficiencyConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     strategy_name: str = "volume_price_efficiency_v1"
-    timeframe: str = "4h"
+    timeframe: str = "1d"
     fill_policy: str = "raw"
     atr_window: int = 14
     volume_window: int = 60
@@ -36,8 +36,8 @@ class VolumePriceEfficiencyConfig(BaseModel):
     def _validate(self) -> "VolumePriceEfficiencyConfig":
         if self.strategy_name != "volume_price_efficiency_v1":
             raise ValueError("strategy_name must be volume_price_efficiency_v1")
-        if self.timeframe != "4h":
-            raise ValueError("timeframe must be 4h")
+        if self.timeframe != "1d":
+            raise ValueError("timeframe must be 1d")
         if self.fill_policy != "raw":
             raise ValueError("fill_policy must be raw")
         if self.atr_window <= 0:

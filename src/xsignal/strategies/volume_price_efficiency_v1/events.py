@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 import numpy as np
@@ -43,7 +42,7 @@ def _event_row(
     row: dict[str, Any] = {
         "symbol": arrays.symbols[s_index],
         "signal_open_time": _json_time(signal_open_time),
-        "decision_time": _json_time(signal_open_time + timedelta(hours=4)),
+        "decision_time": _json_time(entry_open_time),
         "entry_open_time": _json_time(entry_open_time),
         "entry_price": float(entry_price),
         "move_unit": _as_float_or_none(features.move_unit[t_index, s_index]),

@@ -56,7 +56,7 @@ def test_cli_trail_runs_on_reserved_holdout_and_writes_artifacts(tmp_path, monke
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -165,7 +165,7 @@ def test_cli_trail_requires_fixed_two_atr_multiplier(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (),
         ),
     )
@@ -201,7 +201,7 @@ def test_cli_trail_regime_holdout_trains_rule_on_research_then_runs_holdout(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -347,7 +347,7 @@ def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, m
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -473,7 +473,7 @@ def test_cli_trail_diagnose_writes_research_and_holdout_diagnostics(tmp_path, mo
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -592,7 +592,7 @@ def test_cli_trail_walk_forward_uses_research_only_prior_train_windows(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -736,7 +736,7 @@ def test_cli_trail_regime_scan_runs_on_research_only_and_writes_artifacts(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -866,7 +866,7 @@ def test_cli_trail_regime_walk_forward_uses_train_fold_thresholds(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -1020,7 +1020,7 @@ def test_cli_trail_regime_walk_forward_can_select_by_train_stability(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -1194,7 +1194,7 @@ def test_cli_trail_regime_walk_forward_uses_causal_contraction_feature_threshold
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -1340,7 +1340,7 @@ def test_cli_trail_regime_walk_forward_can_select_train_fold_combo_rule(
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -1518,7 +1518,7 @@ def test_cli_trail_regime_walk_forward_combo_gate_can_reject_train_fold_combo_ru
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )

@@ -82,7 +82,7 @@ def test_cli_run_writes_artifacts_with_injected_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -124,7 +124,7 @@ def test_cli_passes_config_values_to_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (),
         ),
     )
@@ -196,7 +196,7 @@ def test_cli_scan_writes_research_only_artifacts_with_holdout_metadata(tmp_path,
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (tmp_path / "manifest.json",),
         ),
     )
@@ -298,7 +298,7 @@ def test_cli_scan_reuses_features_for_threshold_only_grid(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
         lambda *_args, **_kwargs: (
-            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
             (),
         ),
     )

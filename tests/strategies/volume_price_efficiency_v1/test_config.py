@@ -11,7 +11,7 @@ def test_default_config_matches_design():
     config = VolumePriceEfficiencyConfig()
 
     assert config.strategy_name == "volume_price_efficiency_v1"
-    assert config.timeframe == "4h"
+    assert config.timeframe == "1d"
     assert config.fill_policy == "raw"
     assert config.atr_window == 14
     assert config.volume_window == 60
@@ -44,7 +44,7 @@ def test_config_round_trip_cost_includes_entry_and_exit_friction():
 
 def test_config_rejects_invalid_values():
     invalid_kwargs = [
-        {"timeframe": "1h"},
+        {"timeframe": "4h"},
         {"fill_policy": "prev_close_zero_volume"},
         {"atr_window": 0},
         {"volume_window": 0},

@@ -65,7 +65,7 @@ def _normalize_open_time_column(table: pa.Table) -> pa.Table:
 def load_manifested_table(
     manifest_path: Path,
     *,
-    timeframe: str = "4h",
+    timeframe: str = "1d",
     fill_policy: str = "raw",
 ) -> CanonicalOhlcvTable:
     manifest = json.loads(manifest_path.read_text())
@@ -92,10 +92,10 @@ def load_manifested_table(
 
 
 def collect_offline_manifest_paths(root: Path, *, fill_policy: str = "raw") -> tuple[Path, ...]:
-    base = root / "canonical_bars" / "timeframe=4h" / f"fill_policy={fill_policy}"
-    manifest_paths = tuple(sorted(base.glob("year=*/month=*/manifest.json")))
+    base = root / "canonical_bars" / "timeframe=1d" / f"fill_policy={fill_policy}"
+    manifest_paths = tuple(sorted(base.glob("year=*/manifest.json")))
     if not manifest_paths:
-        raise ValueError("offline canonical manifests missing for timeframe=4h")
+        raise ValueError("offline canonical manifests missing for timeframe=1d")
     return manifest_paths
 
 
@@ -106,12 +106,12 @@ def load_offline_ohlcv_table(
 ) -> tuple[CanonicalOhlcvTable, tuple[Path, ...]]:
     manifest_paths = collect_offline_manifest_paths(root, fill_policy=fill_policy)
     tables = [
-        load_manifested_table(path, timeframe="4h", fill_policy=fill_policy).table
+        load_manifested_table(path, timeframe="1d", fill_policy=fill_policy).table
         for path in manifest_paths
     ]
     return (
         CanonicalOhlcvTable(
-            timeframe="4h",
+            timeframe="1d",
             fill_policy=fill_policy,
             manifest_path=manifest_paths[0],
             parquet_path=Path("multiple-partitions"),
