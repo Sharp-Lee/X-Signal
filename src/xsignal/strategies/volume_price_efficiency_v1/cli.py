@@ -84,6 +84,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward 
     build_regime_validation_trade_rows,
     build_regime_walk_forward_fold_row,
     build_regime_stability_summary,
+    filter_combo_regime_candidates,
     select_stable_regime_filters,
     write_trailing_regime_walk_forward_artifacts,
 )
@@ -888,6 +889,14 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         raise ValueError("max_rule_size currently supports at most 2")
     if args.combo_seed_top_k <= 0:
         raise ValueError("combo_seed_top_k must be positive")
+    if args.combo_min_score_lift_vs_best_component < 0.0:
+        raise ValueError("combo_min_score_lift_vs_best_component must be non-negative")
+    if args.combo_min_score_lift_vs_best_single < 0.0:
+        raise ValueError("combo_min_score_lift_vs_best_single must be non-negative")
+    if args.combo_min_component_outperformance_splits < 0:
+        raise ValueError("combo_min_component_outperformance_splits must be non-negative")
+    if args.combo_min_single_outperformance_splits < 0:
+        raise ValueError("combo_min_single_outperformance_splits must be non-negative")
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -1021,6 +1030,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                         segment_rows,
                         split_count=args.stability_splits,
                         min_trades=stability_min_trades,
+                        include_values=True,
                     )
                 )
             return row
@@ -1043,11 +1053,14 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 rule_by_id[rule.rule_id] = rule
                 train_rows.append(evaluate_train_rule(rule))
 
-        selection_candidate_rows = train_rows
-        if not args.allow_combo_selection:
-            selection_candidate_rows = [
-                row for row in train_rows if int(row.get("component_count") or 0) <= 1
-            ]
+        selection_candidate_rows = filter_combo_regime_candidates(
+            train_rows,
+            allow_combo_selection=args.allow_combo_selection,
+            min_score_lift_vs_best_component=args.combo_min_score_lift_vs_best_component,
+            min_score_lift_vs_best_single=args.combo_min_score_lift_vs_best_single,
+            min_component_outperformance_splits=args.combo_min_component_outperformance_splits,
+            min_single_outperformance_splits=args.combo_min_single_outperformance_splits,
+        )
 
         if args.stability_splits > 1:
             selected = select_stable_regime_filters(
@@ -1163,6 +1176,10 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         max_rule_size=args.max_rule_size,
         combo_seed_top_k=args.combo_seed_top_k,
         allow_combo_selection=args.allow_combo_selection,
+        combo_min_score_lift_vs_best_component=args.combo_min_score_lift_vs_best_component,
+        combo_min_score_lift_vs_best_single=args.combo_min_score_lift_vs_best_single,
+        combo_min_component_outperformance_splits=args.combo_min_component_outperformance_splits,
+        combo_min_single_outperformance_splits=args.combo_min_single_outperformance_splits,
         quantiles=args.quantile,
         feature_names=args.feature_name,
     )
@@ -1374,6 +1391,26 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_walk_forward_parser.add_argument("--max-rule-size", type=int, default=1)
     trail_regime_walk_forward_parser.add_argument("--combo-seed-top-k", type=int, default=12)
     trail_regime_walk_forward_parser.add_argument("--allow-combo-selection", action="store_true")
+    trail_regime_walk_forward_parser.add_argument(
+        "--combo-min-score-lift-vs-best-component",
+        type=float,
+        default=0.0,
+    )
+    trail_regime_walk_forward_parser.add_argument(
+        "--combo-min-score-lift-vs-best-single",
+        type=float,
+        default=0.0,
+    )
+    trail_regime_walk_forward_parser.add_argument(
+        "--combo-min-component-outperformance-splits",
+        type=int,
+        default=0,
+    )
+    trail_regime_walk_forward_parser.add_argument(
+        "--combo-min-single-outperformance-splits",
+        type=int,
+        default=0,
+    )
     trail_regime_walk_forward_parser.add_argument("--stability-splits", type=int, default=1)
     trail_regime_walk_forward_parser.add_argument("--stability-min-trades", type=int, default=0)
     trail_regime_walk_forward_parser.add_argument(

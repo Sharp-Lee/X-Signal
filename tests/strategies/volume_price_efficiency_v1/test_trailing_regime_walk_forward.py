@@ -18,6 +18,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward 
     build_regime_validation_trade_rows,
     build_regime_walk_forward_fold_row,
     build_regime_stability_summary,
+    filter_combo_regime_candidates,
     select_stable_regime_filters,
     write_trailing_regime_walk_forward_artifacts,
 )
@@ -119,6 +120,80 @@ def test_build_regime_stability_summary_counts_eligible_and_positive_segments():
         "stability_mean_score": 0.01,
         "stability_min_score": -0.01,
     }
+
+
+def test_build_regime_stability_summary_can_include_segment_score_values():
+    summary = build_regime_stability_summary(
+        [
+            {"trade_count": 8, "score": 0.03},
+            {"trade_count": 7, "score": -0.01},
+            {"trade_count": 2, "score": 0.50},
+        ],
+        split_count=3,
+        min_trades=5,
+        include_values=True,
+    )
+
+    assert summary["stability_score_values"] == json.dumps([0.03, -0.01, 0.5])
+    assert summary["stability_trade_count_values"] == json.dumps([8, 7, 2])
+
+
+def test_filter_combo_regime_candidates_applies_train_only_combo_gates():
+    rows = [
+        {
+            "rule_id": "move_unit_gte_p50",
+            "component_count": 1,
+            "score": 0.03,
+            "trade_count": 100,
+            "stability_score_values": json.dumps([0.01, 0.02, 0.01]),
+        },
+        {
+            "rule_id": "volume_unit_gte_p50",
+            "component_count": 1,
+            "score": 0.02,
+            "trade_count": 90,
+            "stability_score_values": json.dumps([0.0, 0.01, 0.0]),
+        },
+        {
+            "rule_id": "move_unit_gte_p50__and__volume_unit_gte_p50",
+            "component_count": 2,
+            "component_rule_ids": json.dumps(["move_unit_gte_p50", "volume_unit_gte_p50"]),
+            "score": 0.05,
+            "trade_count": 80,
+            "stability_score_values": json.dumps([0.02, 0.01, 0.03]),
+        },
+        {
+            "rule_id": "move_unit_gte_p50__and__quality_gte_p50",
+            "component_count": 2,
+            "component_rule_ids": json.dumps(["move_unit_gte_p50", "quality_gte_p50"]),
+            "score": 0.031,
+            "trade_count": 75,
+            "stability_score_values": json.dumps([0.02, 0.01, 0.005]),
+        },
+    ]
+
+    filtered = filter_combo_regime_candidates(
+        rows,
+        allow_combo_selection=True,
+        min_score_lift_vs_best_component=0.005,
+        min_score_lift_vs_best_single=0.01,
+        min_component_outperformance_splits=2,
+        min_single_outperformance_splits=2,
+    )
+
+    assert [row["rule_id"] for row in filtered] == [
+        "move_unit_gte_p50",
+        "volume_unit_gte_p50",
+        "move_unit_gte_p50__and__volume_unit_gte_p50",
+    ]
+    assert filtered[2]["combo_best_component_rule_id"] == "move_unit_gte_p50"
+    assert filtered[2]["combo_score_lift_vs_best_component"] == 0.02
+    assert filtered[2]["combo_score_lift_vs_best_single"] == 0.02
+    assert filtered[2]["combo_component_outperformance_splits"] == 2
+    assert filtered[2]["combo_single_outperformance_splits"] == 2
+    assert filtered[2]["combo_gate_passed"] is True
+    assert rows[3]["combo_gate_passed"] is False
+    assert rows[3]["combo_score_lift_vs_best_single"] == 0.001
 
 
 def test_select_stable_regime_filters_prefers_consistency_over_raw_train_score():
@@ -265,6 +340,15 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
             "rule_id": rule.rule_id,
             "score": 0.04,
             "trade_count": 22,
+        },
+        {
+            "regime_walk_forward_id": "rwf",
+            "fold_index": 0,
+            "rule_id": "a__and__b",
+            "score": 0.05,
+            "trade_count": 18,
+            "combo_gate_passed": False,
+            "combo_score_lift_vs_best_single": 0.01,
         }
     ]
     validation_trade_rows = [
@@ -321,5 +405,8 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
         "top_filters",
     }
     assert pq.read_table(output / "fold_summary.parquet").num_rows == 1
-    assert pq.read_table(output / "selection_summary.parquet").num_rows == 1
+    selection_table = pq.read_table(output / "selection_summary.parquet")
+    assert selection_table.num_rows == 2
+    assert "combo_gate_passed" in selection_table.column_names
+    assert selection_table.to_pylist()[1]["combo_score_lift_vs_best_single"] == 0.01
     assert pq.read_table(output / "validation_trades.parquet").to_pylist() == validation_trade_rows

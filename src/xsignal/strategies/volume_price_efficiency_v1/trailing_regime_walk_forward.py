@@ -50,6 +50,25 @@ def _score_or_none(row: dict[str, Any]) -> float | None:
     return None if value is None else float(value)
 
 
+def _json_float_values(value: Any) -> list[float | None]:
+    if value is None:
+        return []
+    parsed = value if isinstance(value, list) else json.loads(str(value))
+    return [None if item is None else float(item) for item in parsed]
+
+
+def _json_rule_ids(value: Any, fallback_rule_id: str) -> list[str]:
+    if value is None:
+        return fallback_rule_id.split("__and__") if "__and__" in fallback_rule_id else []
+    parsed = value if isinstance(value, list) else json.loads(str(value))
+    rule_ids = [str(item) for item in parsed]
+    return rule_ids or (fallback_rule_id.split("__and__") if "__and__" in fallback_rule_id else [])
+
+
+def _component_count(row: dict[str, Any]) -> int:
+    return int(row.get("component_count") or 0)
+
+
 def _signal_keep_rate(row: dict[str, Any]) -> float | None:
     if row.get("signal_keep_rate") is not None:
         return float(row["signal_keep_rate"])
@@ -58,7 +77,13 @@ def _signal_keep_rate(row: dict[str, Any]) -> float | None:
 
 def _rows_table(rows: list[dict[str, Any]]) -> pa.Table:
     if rows:
-        return pa.Table.from_pylist(rows)
+        fieldnames: list[str] = []
+        for row in rows:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        normalized_rows = [{key: row.get(key) for key in fieldnames} for row in rows]
+        return pa.Table.from_pylist(normalized_rows)
     return pa.table({})
 
 
@@ -103,6 +128,7 @@ def build_regime_stability_summary(
     *,
     split_count: int,
     min_trades: int,
+    include_values: bool = False,
 ) -> dict[str, Any]:
     if split_count <= 0:
         raise ValueError("split_count must be positive")
@@ -118,7 +144,7 @@ def build_regime_stability_summary(
     ]
     mean_score = sum(eligible_scores) / len(eligible_scores) if eligible_scores else None
     min_score = min(eligible_scores) if eligible_scores else None
-    return {
+    summary = {
         "selection_method": "train_stability",
         "stability_split_count": split_count,
         "stability_min_trades": min_trades,
@@ -128,6 +154,133 @@ def build_regime_stability_summary(
         "stability_mean_score": _rounded(mean_score),
         "stability_min_score": _rounded(min_score),
     }
+    if include_values:
+        summary.update(
+            {
+                "stability_score_values": json.dumps(
+                    [_rounded(_score_or_none(row)) for row in segment_rows]
+                ),
+                "stability_trade_count_values": json.dumps(
+                    [int(row.get("trade_count") or 0) for row in segment_rows]
+                ),
+            }
+        )
+    return summary
+
+
+def _best_by_score(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    scored = [row for row in rows if _score_or_none(row) is not None]
+    if not scored:
+        return None
+    return sorted(
+        scored,
+        key=lambda row: (
+            -float(row["score"]),
+            str(row.get("rule_id")),
+        ),
+    )[0]
+
+
+def _outperformance_count(
+    candidate_scores: list[float | None],
+    benchmark_scores: list[float | None],
+) -> int:
+    count = 0
+    for candidate, benchmark in zip(candidate_scores, benchmark_scores, strict=False):
+        if candidate is not None and benchmark is not None and candidate > benchmark:
+            count += 1
+    return count
+
+
+def _best_segment_scores(rows: list[dict[str, Any]]) -> list[float | None]:
+    score_lists = [_json_float_values(row.get("stability_score_values")) for row in rows]
+    max_len = max((len(scores) for scores in score_lists), default=0)
+    best_scores: list[float | None] = []
+    for index in range(max_len):
+        values = [scores[index] for scores in score_lists if index < len(scores)]
+        finite_values = [value for value in values if value is not None]
+        best_scores.append(max(finite_values) if finite_values else None)
+    return best_scores
+
+
+def filter_combo_regime_candidates(
+    rows: list[dict[str, Any]],
+    *,
+    allow_combo_selection: bool,
+    min_score_lift_vs_best_component: float = 0.0,
+    min_score_lift_vs_best_single: float = 0.0,
+    min_component_outperformance_splits: int = 0,
+    min_single_outperformance_splits: int = 0,
+) -> list[dict[str, Any]]:
+    if not allow_combo_selection:
+        return [row for row in rows if _component_count(row) <= 1]
+    if min_score_lift_vs_best_component < 0.0:
+        raise ValueError("min_score_lift_vs_best_component must be non-negative")
+    if min_score_lift_vs_best_single < 0.0:
+        raise ValueError("min_score_lift_vs_best_single must be non-negative")
+    if min_component_outperformance_splits < 0:
+        raise ValueError("min_component_outperformance_splits must be non-negative")
+    if min_single_outperformance_splits < 0:
+        raise ValueError("min_single_outperformance_splits must be non-negative")
+
+    row_by_rule_id = {str(row.get("rule_id")): row for row in rows}
+    single_rows = [row for row in rows if _component_count(row) <= 1]
+    best_single = _best_by_score(single_rows)
+    best_single_score = _score_or_none(best_single) if best_single is not None else None
+    best_single_segment_scores = _best_segment_scores(single_rows)
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if _component_count(row) <= 1:
+            filtered.append(row)
+            continue
+
+        candidate_score = _score_or_none(row)
+        rule_id = str(row.get("rule_id"))
+        component_rule_ids = _json_rule_ids(row.get("component_rule_ids"), rule_id)
+        component_rows = [
+            row_by_rule_id[component_rule_id]
+            for component_rule_id in component_rule_ids
+            if component_rule_id in row_by_rule_id
+        ]
+        best_component = _best_by_score(component_rows)
+        best_component_score = _score_or_none(best_component) if best_component is not None else None
+        if candidate_score is None or best_component_score is None or best_single_score is None:
+            row["combo_gate_passed"] = False
+            continue
+
+        score_lift_vs_best_component = candidate_score - best_component_score
+        score_lift_vs_best_single = candidate_score - best_single_score
+        candidate_segment_scores = _json_float_values(row.get("stability_score_values"))
+        best_component_segment_scores = _best_segment_scores(component_rows)
+        component_outperformance_splits = _outperformance_count(
+            candidate_segment_scores,
+            best_component_segment_scores,
+        )
+        single_outperformance_splits = _outperformance_count(
+            candidate_segment_scores,
+            best_single_segment_scores,
+        )
+        gate_passed = (
+            score_lift_vs_best_component >= min_score_lift_vs_best_component
+            and score_lift_vs_best_single >= min_score_lift_vs_best_single
+            and component_outperformance_splits >= min_component_outperformance_splits
+            and single_outperformance_splits >= min_single_outperformance_splits
+        )
+        row.update(
+            {
+                "combo_best_component_rule_id": str(best_component.get("rule_id")),
+                "combo_best_single_rule_id": str(best_single.get("rule_id")),
+                "combo_score_lift_vs_best_component": _rounded(score_lift_vs_best_component),
+                "combo_score_lift_vs_best_single": _rounded(score_lift_vs_best_single),
+                "combo_component_outperformance_splits": component_outperformance_splits,
+                "combo_single_outperformance_splits": single_outperformance_splits,
+                "combo_gate_passed": gate_passed,
+            }
+        )
+        if gate_passed:
+            filtered.append(row)
+    return filtered
 
 
 def select_stable_regime_filters(
@@ -302,6 +455,10 @@ def write_trailing_regime_walk_forward_artifacts(
     max_rule_size: int = 1,
     combo_seed_top_k: int = 0,
     allow_combo_selection: bool = False,
+    combo_min_score_lift_vs_best_component: float = 0.0,
+    combo_min_score_lift_vs_best_single: float = 0.0,
+    combo_min_component_outperformance_splits: int = 0,
+    combo_min_single_outperformance_splits: int = 0,
 ) -> Path:
     output_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -328,6 +485,10 @@ def write_trailing_regime_walk_forward_artifacts(
         "max_rule_size": max_rule_size,
         "combo_seed_top_k": combo_seed_top_k,
         "allow_combo_selection": allow_combo_selection,
+        "combo_min_score_lift_vs_best_component": combo_min_score_lift_vs_best_component,
+        "combo_min_score_lift_vs_best_single": combo_min_score_lift_vs_best_single,
+        "combo_min_component_outperformance_splits": combo_min_component_outperformance_splits,
+        "combo_min_single_outperformance_splits": combo_min_single_outperformance_splits,
         "quantiles": list(quantiles),
         "feature_names": list(feature_names),
         "canonical_manifests": canonical_manifests,
