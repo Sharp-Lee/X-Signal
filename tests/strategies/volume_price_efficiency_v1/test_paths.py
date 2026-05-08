@@ -19,6 +19,7 @@ def test_paths_are_strategy_scoped(tmp_path):
     assert paths.trailing_walk_forwards == paths.base / "trailing_walk_forwards"
     assert paths.trailing_regime_scans == paths.base / "trailing_regime_scans"
     assert paths.trailing_regime_walk_forwards == paths.base / "trailing_regime_walk_forwards"
+    assert paths.trailing_regime_diagnostics == paths.base / "trailing_regime_diagnostics"
     assert paths.run_dir("run123") == paths.runs / "run123"
     assert paths.scan_dir("scan123") == paths.scans / "scan123"
     assert paths.trailing_run_dir("trail123") == paths.trailing_runs / "trail123"
@@ -38,6 +39,10 @@ def test_paths_are_strategy_scoped(tmp_path):
     assert (
         paths.trailing_regime_walk_forward_dir("regimewalk123")
         == paths.trailing_regime_walk_forwards / "regimewalk123"
+    )
+    assert (
+        paths.trailing_regime_diagnostic_dir("regimediag123")
+        == paths.trailing_regime_diagnostics / "regimediag123"
     )
 
 
@@ -103,3 +108,11 @@ def test_trailing_regime_walk_forward_id_rejects_path_traversal(tmp_path):
     for bad_walk_forward_id in ["", "../abc", "abc/def", "abc\\def"]:
         with pytest.raises(ValueError, match="regime_walk_forward_id"):
             paths.trailing_regime_walk_forward_dir(bad_walk_forward_id)
+
+
+def test_trailing_regime_diagnostic_id_rejects_path_traversal(tmp_path):
+    paths = VolumePriceEfficiencyPaths(root=tmp_path)
+
+    for bad_diagnostic_id in ["", "../abc", "abc/def", "abc\\def"]:
+        with pytest.raises(ValueError, match="regime_diagnostic_id"):
+            paths.trailing_regime_diagnostic_dir(bad_diagnostic_id)

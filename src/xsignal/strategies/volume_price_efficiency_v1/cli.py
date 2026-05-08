@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from xsignal.strategies.volume_price_efficiency_v1.artifacts import (
     write_run_artifacts,
@@ -73,6 +74,11 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     build_regime_value_arrays,
     select_top_regime_filters,
     write_trailing_regime_scan_artifacts,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_diagnostics import (
+    build_combo_candidate_diagnostic_rows,
+    build_selected_rule_comparison_rows,
+    write_trailing_regime_diagnostic_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
     build_regime_validation_trade_rows,
@@ -823,6 +829,47 @@ def _stability_min_positive_splits(args: argparse.Namespace) -> int:
     return max(1, (args.stability_splits + 1) // 2)
 
 
+def _read_parquet_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return pq.read_table(path).to_pylist()
+
+
+def _trail_regime_diagnose_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    paths = VolumePriceEfficiencyPaths(root=Path(args.root))
+    source_dir = paths.trailing_regime_walk_forward_dir(args.regime_walk_forward_id)
+    selection_rows = _read_parquet_rows(source_dir / "selection_summary.parquet")
+    baseline_fold_rows = _read_parquet_rows(source_dir / "fold_summary.parquet")
+    candidate_rows = build_combo_candidate_diagnostic_rows(selection_rows)
+    comparison_rows = []
+    if args.combo_selection_regime_walk_forward_id:
+        combo_dir = paths.trailing_regime_walk_forward_dir(
+            args.combo_selection_regime_walk_forward_id
+        )
+        experiment_fold_rows = _read_parquet_rows(combo_dir / "fold_summary.parquet")
+        comparison_rows = build_selected_rule_comparison_rows(
+            baseline_fold_rows=baseline_fold_rows,
+            experiment_fold_rows=experiment_fold_rows,
+            baseline_label=args.regime_walk_forward_id,
+            experiment_label=args.combo_selection_regime_walk_forward_id,
+        )
+    runtime_seconds = time.perf_counter() - started
+    diagnostic_id = args.diagnostic_id or uuid.uuid4().hex
+    output = write_trailing_regime_diagnostic_artifacts(
+        paths=paths,
+        diagnostic_id=diagnostic_id,
+        source_regime_walk_forward_id=args.regime_walk_forward_id,
+        combo_selection_regime_walk_forward_id=args.combo_selection_regime_walk_forward_id,
+        candidate_rows=candidate_rows,
+        comparison_rows=comparison_rows,
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+    )
+    print(output)
+    return output
+
+
 def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     if args.atr_multiplier != 2.0:
@@ -1282,6 +1329,13 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_scan_parser.add_argument("--top-k", type=int, default=20)
     trail_regime_scan_parser.add_argument("--min-trades", type=int, default=200)
     trail_regime_scan_parser.set_defaults(func=_trail_regime_scan_command)
+
+    trail_regime_diagnose_parser = subparsers.add_parser("trail-regime-diagnose")
+    trail_regime_diagnose_parser.add_argument("--root", default="data")
+    trail_regime_diagnose_parser.add_argument("--diagnostic-id")
+    trail_regime_diagnose_parser.add_argument("--regime-walk-forward-id", required=True)
+    trail_regime_diagnose_parser.add_argument("--combo-selection-regime-walk-forward-id")
+    trail_regime_diagnose_parser.set_defaults(func=_trail_regime_diagnose_command)
 
     trail_regime_walk_forward_parser = subparsers.add_parser("trail-regime-walk-forward")
     trail_regime_walk_forward_parser.add_argument("--root", default="data")
