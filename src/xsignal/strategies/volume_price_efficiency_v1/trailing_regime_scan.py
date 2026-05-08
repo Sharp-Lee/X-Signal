@@ -486,6 +486,7 @@ def write_trailing_regime_scan_artifacts(
     lookback_bars: int,
     quantiles: tuple[float, ...],
     feature_names: tuple[str, ...],
+    atr_multipliers: tuple[float, ...] | None = None,
 ) -> Path:
     output_dir = paths.trailing_regime_scan_dir(regime_scan_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -500,6 +501,7 @@ def write_trailing_regime_scan_artifacts(
         "config": config.model_dump(mode="json"),
         "config_hash": config.config_hash(),
         "atr_multiplier": atr_multiplier,
+        "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
         "lookback_bars": lookback_bars,
         "quantiles": list(quantiles),
         "feature_names": list(feature_names),

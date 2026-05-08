@@ -203,6 +203,10 @@ def _best_segment_scores(rows: list[dict[str, Any]]) -> list[float | None]:
     return best_scores
 
 
+def _atr_multiplier_key(row: dict[str, Any]) -> float:
+    return float(row.get("atr_multiplier") or 2.0)
+
+
 def filter_combo_regime_candidates(
     rows: list[dict[str, Any]],
     *,
@@ -223,11 +227,11 @@ def filter_combo_regime_candidates(
     if min_single_outperformance_splits < 0:
         raise ValueError("min_single_outperformance_splits must be non-negative")
 
-    row_by_rule_id = {str(row.get("rule_id")): row for row in rows}
+    row_by_rule_and_atr = {
+        (str(row.get("rule_id")), _atr_multiplier_key(row)): row
+        for row in rows
+    }
     single_rows = [row for row in rows if _component_count(row) <= 1]
-    best_single = _best_by_score(single_rows)
-    best_single_score = _score_or_none(best_single) if best_single is not None else None
-    best_single_segment_scores = _best_segment_scores(single_rows)
 
     filtered: list[dict[str, Any]] = []
     for row in rows:
@@ -237,12 +241,21 @@ def filter_combo_regime_candidates(
 
         candidate_score = _score_or_none(row)
         rule_id = str(row.get("rule_id"))
+        atr_multiplier = _atr_multiplier_key(row)
         component_rule_ids = _json_rule_ids(row.get("component_rule_ids"), rule_id)
         component_rows = [
-            row_by_rule_id[component_rule_id]
+            row_by_rule_and_atr[(component_rule_id, atr_multiplier)]
             for component_rule_id in component_rule_ids
-            if component_rule_id in row_by_rule_id
+            if (component_rule_id, atr_multiplier) in row_by_rule_and_atr
         ]
+        single_rows_for_atr = [
+            single_row
+            for single_row in single_rows
+            if _atr_multiplier_key(single_row) == atr_multiplier
+        ]
+        best_single = _best_by_score(single_rows_for_atr)
+        best_single_score = _score_or_none(best_single) if best_single is not None else None
+        best_single_segment_scores = _best_segment_scores(single_rows_for_atr)
         best_component = _best_by_score(component_rows)
         best_component_score = _score_or_none(best_component) if best_component is not None else None
         if candidate_score is None or best_component_score is None or best_single_score is None:
@@ -349,6 +362,8 @@ def build_regime_validation_trade_rows(
             "validation_trade_count": validation_row.get("trade_count"),
             "validation_signal_keep_rate": _rounded(_signal_keep_rate(validation_row)),
         }
+        if selected_train_row.get("atr_multiplier") is not None:
+            row["atr_multiplier"] = selected_train_row["atr_multiplier"]
         row.update(trade)
         if trade_index < len(trade_feature_rows):
             row.update(trade_feature_rows[trade_index])
@@ -415,6 +430,7 @@ def build_regime_walk_forward_fold_row(
         "validation_base_signal_count": validation.get("base_signal_count"),
         "validation_filtered_signal_count": validation.get("filtered_signal_count"),
         "validation_signal_keep_rate": _rounded(_safe_keep_rate(validation)),
+        "atr_multiplier": train.get("atr_multiplier"),
         "efficiency_percentile": selected_config.efficiency_percentile,
         "min_move_unit": selected_config.min_move_unit,
         "min_volume_unit": selected_config.min_volume_unit,
@@ -459,6 +475,7 @@ def write_trailing_regime_walk_forward_artifacts(
     combo_min_score_lift_vs_best_single: float = 0.0,
     combo_min_component_outperformance_splits: int = 0,
     combo_min_single_outperformance_splits: int = 0,
+    atr_multipliers: tuple[float, ...] | None = None,
 ) -> Path:
     output_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -473,6 +490,7 @@ def write_trailing_regime_walk_forward_artifacts(
         "config": config.model_dump(mode="json"),
         "config_hash": config.config_hash(),
         "atr_multiplier": atr_multiplier,
+        "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
         "lookback_bars": lookback_bars,
         "train_days": train_days,
         "test_days": test_days,

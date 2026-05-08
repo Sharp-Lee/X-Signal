@@ -157,6 +157,20 @@ def _parse_string_grid(value: str) -> tuple[str, ...]:
     return parsed
 
 
+def _validate_atr_multiplier(value: float) -> float:
+    if value <= 0.0:
+        raise ValueError("atr_multiplier must be positive")
+    return value
+
+
+def _validate_atr_multiplier_grid(values: tuple[float, ...]) -> tuple[float, ...]:
+    if not values:
+        raise ValueError("atr_multiplier grid must contain at least one value")
+    for value in values:
+        _validate_atr_multiplier(value)
+    return values
+
+
 def _scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     configs = build_scan_configs(
@@ -242,8 +256,7 @@ def _scan_command(args: argparse.Namespace) -> Path:
 
 def _trail_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for the holdout test")
+    atr_multiplier = _validate_atr_multiplier(args.atr_multiplier)
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -284,7 +297,7 @@ def _trail_command(args: argparse.Namespace) -> Path:
         holdout_arrays,
         features,
         config,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
     )
     runtime_seconds = time.perf_counter() - started
     run_id = args.run_id or uuid.uuid4().hex
@@ -299,7 +312,7 @@ def _trail_command(args: argparse.Namespace) -> Path:
         git_commit=_git_commit(),
         runtime_seconds=runtime_seconds,
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
     )
     print(output)
     return output
@@ -307,8 +320,7 @@ def _trail_command(args: argparse.Namespace) -> Path:
 
 def _trail_scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for research trail-scan")
+    atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
     configs = build_scan_configs(
         efficiency_percentiles=args.efficiency_percentile,
         min_move_units=args.min_move_unit,
@@ -346,21 +358,22 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
             cached_features,
             signal=build_signal_mask(research_arrays, cached_features, config),
         )
-        result = simulate_trailing_stop(
-            research_arrays,
-            features,
-            config,
-            atr_multiplier=args.atr_multiplier,
-        )
-        rows.append(
-            build_trailing_scan_row(
-                scan_id=scan_id,
-                config=config,
-                result=result,
-                symbols=research_arrays.symbols,
-                atr_multiplier=args.atr_multiplier,
+        for atr_multiplier in atr_multipliers:
+            result = simulate_trailing_stop(
+                research_arrays,
+                features,
+                config,
+                atr_multiplier=atr_multiplier,
             )
-        )
+            rows.append(
+                build_trailing_scan_row(
+                    scan_id=scan_id,
+                    config=config,
+                    result=result,
+                    symbols=research_arrays.symbols,
+                    atr_multiplier=atr_multiplier,
+                )
+            )
 
     top_configs = select_top_trailing_configs(
         rows,
@@ -379,7 +392,8 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
         runtime_seconds=runtime_seconds,
         symbol_count=len(research_arrays.symbols),
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multipliers[0],
+        atr_multipliers=atr_multipliers,
         min_trades=args.min_trades,
     )
     print(output)
@@ -388,8 +402,7 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
 
 def _trail_diagnose_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for trail diagnostics")
+    atr_multiplier = _validate_atr_multiplier(args.atr_multiplier)
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -422,7 +435,7 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         research_arrays,
         research_features,
         config,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
     )
 
     full_features = compute_features(arrays, config)
@@ -443,7 +456,7 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         holdout_arrays,
         holdout_features,
         config,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
     )
 
     research_trades = enrich_trades_with_market_context(
@@ -476,7 +489,7 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         git_commit=_git_commit(),
         runtime_seconds=runtime_seconds,
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
         lookback_bars=args.lookback_bars,
     )
     print(output)
@@ -511,8 +524,7 @@ def _signal_features(
 
 def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for research trail-walk-forward")
+    atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
     configs = build_scan_configs(
         efficiency_percentiles=args.efficiency_percentile,
         min_move_units=args.min_move_unit,
@@ -553,31 +565,32 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
                 features = _signal_features(research_arrays, config, research_feature_cache)
                 research_signal_cache[config.config_hash()] = features
             train_features = slice_feature_arrays(features, fold.train_indices)
-            result = simulate_trailing_stop(
-                train_arrays,
-                train_features,
-                config,
-                atr_multiplier=args.atr_multiplier,
-            )
-            row = build_trailing_scan_row(
-                scan_id=walk_forward_id,
-                config=config,
-                result=result,
-                symbols=train_arrays.symbols,
-                atr_multiplier=args.atr_multiplier,
-            )
-            row.update(
-                {
-                    "walk_forward_id": walk_forward_id,
-                    "fold_index": fold_index,
-                    "train_start": fold.train_start.isoformat(),
-                    "train_end": fold.train_end.isoformat(),
-                    "test_start": fold.test_start.isoformat(),
-                    "test_end": fold.test_end.isoformat(),
-                    "is_selected": False,
-                }
-            )
-            train_rows.append(row)
+            for atr_multiplier in atr_multipliers:
+                result = simulate_trailing_stop(
+                    train_arrays,
+                    train_features,
+                    config,
+                    atr_multiplier=atr_multiplier,
+                )
+                row = build_trailing_scan_row(
+                    scan_id=walk_forward_id,
+                    config=config,
+                    result=result,
+                    symbols=train_arrays.symbols,
+                    atr_multiplier=atr_multiplier,
+                )
+                row.update(
+                    {
+                        "walk_forward_id": walk_forward_id,
+                        "fold_index": fold_index,
+                        "train_start": fold.train_start.isoformat(),
+                        "train_end": fold.train_end.isoformat(),
+                        "test_start": fold.test_start.isoformat(),
+                        "test_end": fold.test_end.isoformat(),
+                        "is_selected": False,
+                    }
+                )
+                train_rows.append(row)
 
         selected = select_top_trailing_configs(
             train_rows,
@@ -591,6 +604,7 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
             selected_train_row["is_selected"] = True
             selected_train_rows.append(selected_train_row)
             selected_config = config_by_hash[str(selected_train_row["config_hash"])]
+            selected_atr_multiplier = float(selected_train_row["atr_multiplier"])
             selected_features = research_signal_cache.get(selected_config.config_hash())
             if selected_features is None:
                 selected_features = _signal_features(
@@ -605,14 +619,14 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
                 validation_arrays,
                 validation_features,
                 selected_config,
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=selected_atr_multiplier,
             )
             validation_row = build_trailing_scan_row(
                 scan_id=walk_forward_id,
                 config=selected_config,
                 result=validation_result,
                 symbols=validation_arrays.symbols,
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=selected_atr_multiplier,
             )
 
         selection_rows.extend(train_rows)
@@ -645,7 +659,8 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
         runtime_seconds=runtime_seconds,
         symbol_count=len(research_arrays.symbols),
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multipliers[0],
+        atr_multipliers=atr_multipliers,
         train_days=args.train_days,
         test_days=args.test_days,
         step_days=args.step_days,
@@ -657,8 +672,7 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
 
 def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for research trail-regime-scan")
+    atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
     config = VolumePriceEfficiencyConfig(
         atr_window=args.atr_window,
         volume_window=args.volume_window,
@@ -697,45 +711,47 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
     )
     regime_scan_id = args.regime_scan_id or uuid.uuid4().hex
     base_signal_count = int(features.signal.sum())
-    base_result = simulate_trailing_stop(
-        research_arrays,
-        features,
-        config,
-        atr_multiplier=args.atr_multiplier,
-    )
-    rows = [
-        build_regime_scan_row(
-            regime_scan_id=regime_scan_id,
-            config=config,
-            result=base_result,
-            symbols=research_arrays.symbols,
-            rule=None,
-            base_signal_count=base_signal_count,
-            filtered_signal_count=base_signal_count,
-            atr_multiplier=args.atr_multiplier,
-        )
-    ]
-    for rule in rules:
-        filtered_signal = apply_regime_filter_rule(features.signal, values_by_feature, rule)
-        filtered_features = replace(features, signal=filtered_signal)
-        result = simulate_trailing_stop(
+    rows = []
+    for atr_multiplier in atr_multipliers:
+        base_result = simulate_trailing_stop(
             research_arrays,
-            filtered_features,
+            features,
             config,
-            atr_multiplier=args.atr_multiplier,
+            atr_multiplier=atr_multiplier,
         )
         rows.append(
             build_regime_scan_row(
                 regime_scan_id=regime_scan_id,
                 config=config,
-                result=result,
+                result=base_result,
                 symbols=research_arrays.symbols,
-                rule=rule,
+                rule=None,
                 base_signal_count=base_signal_count,
-                filtered_signal_count=int(filtered_signal.sum()),
-                atr_multiplier=args.atr_multiplier,
+                filtered_signal_count=base_signal_count,
+                atr_multiplier=atr_multiplier,
             )
         )
+        for rule in rules:
+            filtered_signal = apply_regime_filter_rule(features.signal, values_by_feature, rule)
+            filtered_features = replace(features, signal=filtered_signal)
+            result = simulate_trailing_stop(
+                research_arrays,
+                filtered_features,
+                config,
+                atr_multiplier=atr_multiplier,
+            )
+            rows.append(
+                build_regime_scan_row(
+                    regime_scan_id=regime_scan_id,
+                    config=config,
+                    result=result,
+                    symbols=research_arrays.symbols,
+                    rule=rule,
+                    base_signal_count=base_signal_count,
+                    filtered_signal_count=int(filtered_signal.sum()),
+                    atr_multiplier=atr_multiplier,
+                )
+            )
 
     top_filters = select_top_regime_filters(
         rows,
@@ -754,7 +770,8 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
         runtime_seconds=runtime_seconds,
         symbol_count=len(research_arrays.symbols),
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multipliers[0],
+        atr_multipliers=atr_multipliers,
         lookback_bars=args.lookback_bars,
         quantiles=args.quantile,
         feature_names=args.feature_name,
@@ -940,8 +957,7 @@ def _trail_regime_gate_sweep_command(args: argparse.Namespace) -> Path:
 
 def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError("atr_multiplier must stay fixed at 2.0 for regime holdout")
+    atr_multiplier = _validate_atr_multiplier(args.atr_multiplier)
     if args.stability_splits <= 0:
         raise ValueError("stability_splits must be positive")
     if args.stability_min_trades < 0:
@@ -1019,7 +1035,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
             research_arrays,
             replace(research_features, signal=filtered_signal),
             config,
-            atr_multiplier=args.atr_multiplier,
+            atr_multiplier=atr_multiplier,
         )
         row = build_regime_scan_row(
             regime_scan_id=run_id,
@@ -1029,7 +1045,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
             rule=rule,
             base_signal_count=research_base_signal_count,
             filtered_signal_count=int(filtered_signal.sum()),
-            atr_multiplier=args.atr_multiplier,
+            atr_multiplier=atr_multiplier,
         )
         row.update(
             {
@@ -1054,7 +1070,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
                     segment_arrays,
                     replace(segment_features, signal=filtered_segment_signal),
                     config,
-                    atr_multiplier=args.atr_multiplier,
+                    atr_multiplier=atr_multiplier,
                 )
                 segment_row = build_regime_scan_row(
                     regime_scan_id=run_id,
@@ -1064,7 +1080,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
                     rule=rule,
                     base_signal_count=int(segment_features.signal.sum()),
                     filtered_signal_count=int(filtered_segment_signal.sum()),
-                    atr_multiplier=args.atr_multiplier,
+                    atr_multiplier=atr_multiplier,
                 )
                 segment_row.update(
                     {
@@ -1149,7 +1165,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         holdout_arrays,
         replace(holdout_features, signal=filtered_holdout_signal),
         config,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
     )
 
     runtime_seconds = time.perf_counter() - started
@@ -1164,7 +1180,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         git_commit=_git_commit(),
         runtime_seconds=runtime_seconds,
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multiplier,
         lookback_bars=args.lookback_bars,
         quantiles=args.quantile,
         feature_names=args.feature_name,
@@ -1181,10 +1197,7 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
 
 def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
-    if args.atr_multiplier != 2.0:
-        raise ValueError(
-            "atr_multiplier must stay fixed at 2.0 for research trail-regime-walk-forward"
-        )
+    atr_multipliers = _validate_atr_multiplier_grid(args.atr_multiplier)
     if args.stability_splits <= 0:
         raise ValueError("stability_splits must be positive")
     if args.stability_min_trades < 0:
@@ -1264,7 +1277,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         train_base_signal_count = int(train_features.signal.sum())
         train_rows = []
 
-        def evaluate_train_rule(rule):
+        def evaluate_train_rule(rule, atr_multiplier: float):
             filtered_train_signal = apply_regime_filter_rule(
                 train_features.signal,
                 train_values,
@@ -1274,7 +1287,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 train_arrays,
                 replace(train_features, signal=filtered_train_signal),
                 config,
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=atr_multiplier,
             )
             row = build_regime_scan_row(
                 regime_scan_id=regime_walk_forward_id,
@@ -1284,7 +1297,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 rule=rule,
                 base_signal_count=train_base_signal_count,
                 filtered_signal_count=int(filtered_train_signal.sum()),
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=atr_multiplier,
             )
             row.update(
                 {
@@ -1313,7 +1326,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                         segment_arrays,
                         replace(segment_features, signal=filtered_segment_signal),
                         config,
-                        atr_multiplier=args.atr_multiplier,
+                        atr_multiplier=atr_multiplier,
                     )
                     segment_row = build_regime_scan_row(
                         regime_scan_id=regime_walk_forward_id,
@@ -1323,7 +1336,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                         rule=rule,
                         base_signal_count=int(segment_features.signal.sum()),
                         filtered_signal_count=int(filtered_segment_signal.sum()),
-                        atr_multiplier=args.atr_multiplier,
+                        atr_multiplier=atr_multiplier,
                     )
                     segment_row.update(
                         {
@@ -1344,7 +1357,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
             return row
 
         for rule in train_rules:
-            train_rows.append(evaluate_train_rule(rule))
+            for atr_multiplier in atr_multipliers:
+                train_rows.append(evaluate_train_rule(rule, atr_multiplier))
 
         if args.max_rule_size > 1:
             seed_rows = select_top_regime_filters(
@@ -1352,14 +1366,16 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 top_k=args.combo_seed_top_k,
                 min_trades=args.min_trades,
             )
-            seed_rules = tuple(rule_by_id[str(row["rule_id"])] for row in seed_rows)
+            seed_rule_ids = tuple(dict.fromkeys(str(row["rule_id"]) for row in seed_rows))
+            seed_rules = tuple(rule_by_id[rule_id] for rule_id in seed_rule_ids)
             combo_rules = build_composite_regime_filter_rules(
                 seed_rules,
                 combo_size=args.max_rule_size,
             )
             for rule in combo_rules:
                 rule_by_id[rule.rule_id] = rule
-                train_rows.append(evaluate_train_rule(rule))
+                for atr_multiplier in atr_multipliers:
+                    train_rows.append(evaluate_train_rule(rule, atr_multiplier))
 
         selection_candidate_rows = filter_combo_regime_candidates(
             train_rows,
@@ -1390,6 +1406,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
             selected_train_row["is_selected"] = True
             selected_train_rows.append(selected_train_row)
             selected_rule = rule_by_id[str(selected_train_row["rule_id"])]
+            selected_atr_multiplier = float(selected_train_row["atr_multiplier"])
             validation_arrays = slice_ohlcv_arrays(research_arrays, fold.test_indices)
             validation_features = slice_feature_arrays(features, fold.test_indices)
             validation_values = _slice_regime_values(values_by_feature, fold.test_indices)
@@ -1402,7 +1419,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 validation_arrays,
                 replace(validation_features, signal=filtered_validation_signal),
                 config,
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=selected_atr_multiplier,
             )
             validation_row = build_regime_scan_row(
                 regime_scan_id=regime_walk_forward_id,
@@ -1412,7 +1429,7 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 rule=selected_rule,
                 base_signal_count=int(validation_features.signal.sum()),
                 filtered_signal_count=int(filtered_validation_signal.sum()),
-                atr_multiplier=args.atr_multiplier,
+                atr_multiplier=selected_atr_multiplier,
             )
             validation_trade_rows.extend(
                 build_regime_validation_trade_rows(
@@ -1472,7 +1489,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         runtime_seconds=runtime_seconds,
         symbol_count=len(research_arrays.symbols),
         data_split=data_split,
-        atr_multiplier=args.atr_multiplier,
+        atr_multiplier=atr_multipliers[0],
+        atr_multipliers=atr_multipliers,
         lookback_bars=args.lookback_bars,
         train_days=args.train_days,
         test_days=args.test_days,
@@ -1629,7 +1647,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_scan_parser.add_argument("--baseline-seed", type=int, default=17)
     trail_scan_parser.add_argument("--holdout-days", type=int, default=180)
-    trail_scan_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_scan_parser.add_argument("--top-k", type=int, default=20)
     trail_scan_parser.add_argument("--min-trades", type=int, default=200)
     trail_scan_parser.set_defaults(func=_trail_scan_command)
@@ -1676,7 +1694,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
     trail_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
-    trail_walk_forward_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_walk_forward_parser.add_argument("--train-days", type=int, default=720)
     trail_walk_forward_parser.add_argument("--test-days", type=int, default=90)
     trail_walk_forward_parser.add_argument("--step-days", type=int, default=90)
@@ -1701,7 +1719,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_scan_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_regime_scan_parser.add_argument("--baseline-seed", type=int, default=17)
     trail_regime_scan_parser.add_argument("--holdout-days", type=int, default=180)
-    trail_regime_scan_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_regime_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_regime_scan_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_regime_scan_parser.add_argument(
         "--feature-name",
@@ -1755,7 +1773,7 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_walk_forward_parser.add_argument("--slippage-bps", type=float, default=5.0)
     trail_regime_walk_forward_parser.add_argument("--baseline-seed", type=int, default=17)
     trail_regime_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
-    trail_regime_walk_forward_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_regime_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
     trail_regime_walk_forward_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_regime_walk_forward_parser.add_argument("--train-days", type=int, default=720)
     trail_regime_walk_forward_parser.add_argument("--test-days", type=int, default=90)

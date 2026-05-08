@@ -189,15 +189,20 @@ Expected scan outputs:
 - `top_configs.json`
 - `bucket_summary.parquet`
 
-Scan the same research window with the actual 2 ATR trailing-stop simulator:
+Scan the same research window with the actual trailing-stop simulator:
 
 ```bash
-xsignal-vpe-v1 trail-scan --root data --offline --scan-id vpe-trailing-scan
+xsignal-vpe-v1 trail-scan \
+  --root data \
+  --offline \
+  --scan-id vpe-trailing-scan \
+  --atr-multiplier 1.5,2,2.5,3,4,5,6
 ```
 
 Use this before the final holdout trail when the production exit logic is a
 trailing stop. It ranks configs by research `total_return - max_drawdown`, keeps
-the latest 180 days reserved, and does not trade holdout rows.
+the latest 180 days reserved, searches ATR trailing-stop width on research data,
+and does not trade holdout rows.
 
 Expected trailing scan outputs:
 
@@ -230,13 +235,17 @@ Expected diagnostic outputs:
 Run the trailing-stop production test on the reserved holdout window:
 
 ```bash
-xsignal-vpe-v1 trail --root data --offline --run-id vpe-trailing-holdout
+xsignal-vpe-v1 trail \
+  --root data \
+  --offline \
+  --run-id vpe-trailing-holdout \
+  --atr-multiplier 3
 ```
 
 This is separate from the scan phase: it uses the chosen signal settings,
 reserves the latest 180 days by default, trades only that holdout window, enters
 on the next daily open after a signal, locks each symbol independently while a
-position is open, and exits at a 2 ATR trailing stop.
+position is open, and exits at the research-selected ATR trailing stop.
 
 Expected trailing outputs:
 
