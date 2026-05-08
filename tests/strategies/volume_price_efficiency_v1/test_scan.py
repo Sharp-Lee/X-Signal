@@ -49,18 +49,30 @@ def _event(
 def test_build_scan_configs_expands_compact_grid():
     configs = build_scan_configs(
         efficiency_percentiles=(0.9, 0.95),
+        signal_mode="seed_efficiency",
         min_move_units=(0.5,),
         min_volume_units=(0.3,),
         min_close_positions=(0.7, 0.8),
         min_body_ratios=(0.4,),
+        seed_efficiency_lookback=(4, 5),
+        seed_min_efficiency_ratio_to_max=(1.5, 2.0),
+        seed_min_efficiency_ratio_to_mean=4.0,
+        seed_max_volume_unit=(0.9, 1.2),
+        seed_bottom_lookback=45,
+        seed_max_close_position_in_range=(0.5, 0.6),
         fee_bps=5.0,
         slippage_bps=5.0,
         baseline_seed=17,
     )
 
-    assert len(configs) == 4
-    assert [config.efficiency_percentile for config in configs] == [0.9, 0.9, 0.95, 0.95]
-    assert [config.min_close_position for config in configs] == [0.7, 0.8, 0.7, 0.8]
+    assert len(configs) == 64
+    assert [config.efficiency_percentile for config in configs[:32]] == [0.9] * 32
+    assert {config.min_close_position for config in configs} == {0.7, 0.8}
+    assert {config.signal_mode for config in configs} == {"seed_efficiency"}
+    assert {config.seed_efficiency_lookback for config in configs} == {4, 5}
+    assert {config.seed_min_efficiency_ratio_to_max for config in configs} == {1.5, 2.0}
+    assert {config.seed_max_volume_unit for config in configs} == {0.9, 1.2}
+    assert {config.seed_max_close_position_in_range for config in configs} == {0.5, 0.6}
 
 
 def test_build_scan_row_flattens_summary_and_scores_ranking_horizon():
@@ -80,6 +92,8 @@ def test_build_scan_row_flattens_summary_and_scores_ranking_horizon():
     assert row["scan_id"] == "scan123"
     assert row["config_hash"] == config.config_hash()
     assert row["efficiency_percentile"] == 0.95
+    assert row["signal_mode"] == "classic"
+    assert row["seed_efficiency_lookback"] == 4
     assert row["event_count"] == 2
     assert row["baseline_event_count"] == 2
     assert row["symbol_count"] == 2

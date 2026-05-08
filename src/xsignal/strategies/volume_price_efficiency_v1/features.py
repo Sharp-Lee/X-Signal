@@ -43,6 +43,16 @@ def build_signal_mask(
     features: FeatureArrays,
     config: VolumePriceEfficiencyConfig,
 ) -> np.ndarray:
+    if config.signal_mode == "seed_efficiency":
+        return build_seed_efficiency_signal_mask(arrays, features, config)
+    return build_classic_signal_mask(arrays, features, config)
+
+
+def build_classic_signal_mask(
+    arrays: OhlcvArrays,
+    features: FeatureArrays,
+    config: VolumePriceEfficiencyConfig,
+) -> np.ndarray:
     signal = np.zeros(arrays.close.shape, dtype=bool)
     for index in range(1, arrays.close.shape[0]):
         signal[index] = (
@@ -57,6 +67,80 @@ def build_signal_mask(
             & (features.close_position[index] >= config.min_close_position)
             & (features.body_ratio[index] >= config.min_body_ratio)
         )
+    return signal
+
+
+def _previous_finite(values: np.ndarray, index: int, column_index: int, window: int) -> np.ndarray:
+    start_index = index - window
+    if start_index < 0:
+        return np.array([], dtype=np.float64)
+    window_values = values[start_index:index, column_index]
+    return window_values[np.isfinite(window_values)]
+
+
+def _price_range_position(
+    arrays: OhlcvArrays,
+    index: int,
+    column_index: int,
+    window: int,
+) -> float:
+    start_index = index - window
+    if start_index < 0:
+        return np.nan
+    lows = arrays.low[start_index:index, column_index]
+    highs = arrays.high[start_index:index, column_index]
+    finite_lows = lows[np.isfinite(lows)]
+    finite_highs = highs[np.isfinite(highs)]
+    close = arrays.close[index, column_index]
+    if finite_lows.size < window or finite_highs.size < window or not np.isfinite(close):
+        return np.nan
+    range_low = float(np.min(finite_lows))
+    range_high = float(np.max(finite_highs))
+    if range_high <= range_low:
+        return np.nan
+    return float((close - range_low) / (range_high - range_low))
+
+
+def build_seed_efficiency_signal_mask(
+    arrays: OhlcvArrays,
+    features: FeatureArrays,
+    config: VolumePriceEfficiencyConfig,
+) -> np.ndarray:
+    signal = np.zeros(arrays.close.shape, dtype=bool)
+    for index in range(1, arrays.close.shape[0]):
+        for column_index in range(arrays.close.shape[1]):
+            if not arrays.quality[index, column_index]:
+                continue
+            current_efficiency = features.efficiency[index, column_index]
+            recent_efficiency = _previous_finite(
+                features.efficiency,
+                index,
+                column_index,
+                config.seed_efficiency_lookback,
+            )
+            if recent_efficiency.size < config.seed_efficiency_lookback:
+                continue
+            price_range_position = _price_range_position(
+                arrays,
+                index,
+                column_index,
+                config.seed_bottom_lookback,
+            )
+            if not np.isfinite(price_range_position):
+                continue
+            recent_max = float(np.max(recent_efficiency))
+            recent_mean = float(np.mean(recent_efficiency))
+            signal[index, column_index] = bool(
+                np.isfinite(current_efficiency)
+                and current_efficiency > recent_max * config.seed_min_efficiency_ratio_to_max
+                and current_efficiency > recent_mean * config.seed_min_efficiency_ratio_to_mean
+                and features.move_unit[index, column_index] >= config.min_move_unit
+                and features.volume_unit[index, column_index] >= config.min_volume_unit
+                and features.volume_unit[index, column_index] <= config.seed_max_volume_unit
+                and features.close_position[index, column_index] >= config.min_close_position
+                and features.body_ratio[index, column_index] >= config.min_body_ratio
+                and price_range_position <= config.seed_max_close_position_in_range
+            )
     return signal
 
 

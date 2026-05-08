@@ -60,6 +60,8 @@ def test_build_trailing_scan_row_scores_return_minus_drawdown():
     assert row["scan_id"] == "trailscan"
     assert row["config_hash"] == config.config_hash()
     assert row["efficiency_percentile"] == 0.9
+    assert row["signal_mode"] == "classic"
+    assert row["seed_efficiency_lookback"] == 4
     assert row["min_move_unit"] == 1.2
     assert row["symbol_count"] == 2
     assert row["trade_count"] == 3
