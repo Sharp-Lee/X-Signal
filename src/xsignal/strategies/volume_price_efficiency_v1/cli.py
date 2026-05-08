@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import time
 import uuid
@@ -76,8 +77,11 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
     write_trailing_regime_scan_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_diagnostics import (
+    build_gate_sweep_fold_comparison_rows,
+    build_gate_sweep_summary_rows,
     build_combo_candidate_diagnostic_rows,
     build_selected_rule_comparison_rows,
+    write_trailing_regime_gate_sweep_artifacts,
     write_trailing_regime_diagnostic_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_walk_forward import (
@@ -836,6 +840,25 @@ def _read_parquet_rows(path: Path) -> list[dict]:
     return pq.read_table(path).to_pylist()
 
 
+def _read_json_object(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return json.loads(path.read_text())
+
+
+def _load_regime_walk_forward_artifact(
+    paths: VolumePriceEfficiencyPaths,
+    regime_walk_forward_id: str,
+) -> dict:
+    source_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
+    return {
+        "regime_walk_forward_id": regime_walk_forward_id,
+        "manifest": _read_json_object(source_dir / "manifest.json"),
+        "fold_rows": _read_parquet_rows(source_dir / "fold_summary.parquet"),
+        "selection_rows": _read_parquet_rows(source_dir / "selection_summary.parquet"),
+    }
+
+
 def _trail_regime_diagnose_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     paths = VolumePriceEfficiencyPaths(root=Path(args.root))
@@ -863,6 +886,49 @@ def _trail_regime_diagnose_command(args: argparse.Namespace) -> Path:
         source_regime_walk_forward_id=args.regime_walk_forward_id,
         combo_selection_regime_walk_forward_id=args.combo_selection_regime_walk_forward_id,
         candidate_rows=candidate_rows,
+        comparison_rows=comparison_rows,
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+    )
+    print(output)
+    return output
+
+
+def _trail_regime_gate_sweep_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    paths = VolumePriceEfficiencyPaths(root=Path(args.root))
+    baseline_artifact = _load_regime_walk_forward_artifact(
+        paths,
+        args.baseline_regime_walk_forward_id,
+    )
+    experiment_artifacts = [
+        _load_regime_walk_forward_artifact(paths, regime_walk_forward_id)
+        for regime_walk_forward_id in args.experiment_regime_walk_forward_id
+    ]
+    run_artifacts = [baseline_artifact, *experiment_artifacts]
+    summary_rows = build_gate_sweep_summary_rows(
+        baseline_regime_walk_forward_id=args.baseline_regime_walk_forward_id,
+        run_artifacts=run_artifacts,
+    )
+    baseline_fold_rows = baseline_artifact["fold_rows"]
+    comparison_rows = [
+        comparison_row
+        for artifact in experiment_artifacts
+        for comparison_row in build_gate_sweep_fold_comparison_rows(
+            baseline_regime_walk_forward_id=args.baseline_regime_walk_forward_id,
+            experiment_regime_walk_forward_id=str(artifact["regime_walk_forward_id"]),
+            baseline_fold_rows=baseline_fold_rows,
+            experiment_fold_rows=artifact["fold_rows"],
+        )
+    ]
+    runtime_seconds = time.perf_counter() - started
+    diagnostic_id = args.diagnostic_id or uuid.uuid4().hex
+    output = write_trailing_regime_gate_sweep_artifacts(
+        paths=paths,
+        diagnostic_id=diagnostic_id,
+        baseline_regime_walk_forward_id=args.baseline_regime_walk_forward_id,
+        experiment_regime_walk_forward_ids=args.experiment_regime_walk_forward_id,
+        summary_rows=summary_rows,
         comparison_rows=comparison_rows,
         git_commit=_git_commit(),
         runtime_seconds=runtime_seconds,
@@ -1353,6 +1419,20 @@ def main(argv: list[str] | None = None) -> int:
     trail_regime_diagnose_parser.add_argument("--regime-walk-forward-id", required=True)
     trail_regime_diagnose_parser.add_argument("--combo-selection-regime-walk-forward-id")
     trail_regime_diagnose_parser.set_defaults(func=_trail_regime_diagnose_command)
+
+    trail_regime_gate_sweep_parser = subparsers.add_parser("trail-regime-gate-sweep")
+    trail_regime_gate_sweep_parser.add_argument("--root", default="data")
+    trail_regime_gate_sweep_parser.add_argument("--diagnostic-id")
+    trail_regime_gate_sweep_parser.add_argument(
+        "--baseline-regime-walk-forward-id",
+        required=True,
+    )
+    trail_regime_gate_sweep_parser.add_argument(
+        "--experiment-regime-walk-forward-id",
+        action="append",
+        required=True,
+    )
+    trail_regime_gate_sweep_parser.set_defaults(func=_trail_regime_gate_sweep_command)
 
     trail_regime_walk_forward_parser = subparsers.add_parser("trail-regime-walk-forward")
     trail_regime_walk_forward_parser.add_argument("--root", default="data")
