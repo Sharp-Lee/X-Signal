@@ -271,3 +271,35 @@ xsignal-vpe-live reconcile --db data/live/vpe-live.sqlite
 
 Production order submission is not part of the offline core. The Binance
 testnet adapter is the next implementation plan after this core passes tests.
+
+## Binance USD-M Testnet Smoke
+
+The live broker adapter talks to Binance USD-M Futures testnet through signed
+REST requests. It does not use `binance-cli` for production or testnet order
+paths.
+
+Set testnet credentials:
+
+```bash
+export BINANCE_API_KEY=...
+export BINANCE_SECRET_KEY=...
+```
+
+Run a read-only testnet smoke check:
+
+```bash
+xsignal-vpe-live testnet-smoke --symbol BTCUSDT
+```
+
+Validate order parameters without entering the matching engine:
+
+```bash
+xsignal-vpe-live testnet-smoke \
+  --symbol BTCUSDT \
+  --quantity 0.001 \
+  --submit-test-order
+```
+
+`--submit-test-order` uses Binance `/fapi/v1/order/test`; it validates signed
+order payloads but does not create a live position. Real testnet lifecycle
+trading is the next phase.
