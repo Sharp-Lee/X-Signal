@@ -106,3 +106,113 @@ def test_broker_maps_position_and_multi_asset_modes():
 
     assert broker.get_position_mode() == "one_way"
     assert broker.get_multi_assets_mode() == "single_asset_usdt"
+
+
+def test_broker_changes_margin_type_and_leverage():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.change_margin_type("BTCUSDT", "isolated")
+    broker.change_leverage("BTCUSDT", 1)
+
+    assert rest_client.calls == [
+        (
+            "POST",
+            "/fapi/v1/marginType",
+            True,
+            {"symbol": "BTCUSDT", "marginType": "ISOLATED"},
+        ),
+        ("POST", "/fapi/v1/leverage", True, {"symbol": "BTCUSDT", "leverage": 1}),
+    ]
+
+
+def test_broker_market_buy_uses_compact_client_order_id():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.market_buy(
+        symbol="BTCUSDT",
+        quantity=0.001,
+        client_order_id="XV1TEBTC123",
+    )
+
+    assert rest_client.calls == [
+        (
+            "POST",
+            "/fapi/v1/order",
+            True,
+            {
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "0.001",
+                "newClientOrderId": "XV1TEBTC123",
+                "positionSide": "BOTH",
+            },
+        )
+    ]
+
+
+def test_broker_places_stop_market_close_without_quantity():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.place_stop_market_close(
+        symbol="BTCUSDT",
+        stop_price=90.5,
+        client_order_id="XV1TSBTC123",
+    )
+
+    assert rest_client.calls == [
+        (
+            "POST",
+            "/fapi/v1/order",
+            True,
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "STOP_MARKET",
+                "stopPrice": "90.5",
+                "closePosition": "true",
+                "workingType": "CONTRACT_PRICE",
+                "newClientOrderId": "XV1TSBTC123",
+                "positionSide": "BOTH",
+            },
+        )
+    ]
+
+
+def test_broker_cancels_and_validates_test_order():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.cancel_order(symbol="BTCUSDT", client_order_id="XV1TSBTC123")
+    broker.test_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        order_type="MARKET",
+        quantity=0.001,
+        client_order_id="XV1TEBTC123",
+    )
+
+    assert rest_client.calls == [
+        (
+            "DELETE",
+            "/fapi/v1/order",
+            True,
+            {"symbol": "BTCUSDT", "origClientOrderId": "XV1TSBTC123"},
+        ),
+        (
+            "POST",
+            "/fapi/v1/order/test",
+            True,
+            {
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "0.001",
+                "newClientOrderId": "XV1TEBTC123",
+                "positionSide": "BOTH",
+            },
+        ),
+    ]

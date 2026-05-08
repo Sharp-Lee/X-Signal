@@ -76,3 +76,96 @@ class BinanceUsdFuturesTestnetBroker:
     def get_multi_assets_mode(self) -> str:
         payload = self.rest_client.request("GET", "/fapi/v1/multiAssetsMargin", signed=True)
         return "multi_asset" if payload.get("multiAssetsMargin") else "single_asset_usdt"
+
+    def change_margin_type(self, symbol: str, margin_mode: str) -> dict[str, Any]:
+        if margin_mode != "isolated":
+            raise ValueError("only isolated margin is supported")
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/marginType",
+            signed=True,
+            params={"symbol": symbol, "marginType": "ISOLATED"},
+        )
+
+    def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
+        if leverage != 1:
+            raise ValueError("only 1x leverage is supported")
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/leverage",
+            signed=True,
+            params={"symbol": symbol, "leverage": leverage},
+        )
+
+    def market_buy(self, *, symbol: str, quantity: float, client_order_id: str) -> dict[str, Any]:
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/order",
+            signed=True,
+            params={
+                "symbol": symbol,
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": _format_decimal(quantity),
+                "newClientOrderId": client_order_id,
+                "positionSide": "BOTH",
+            },
+        )
+
+    def place_stop_market_close(
+        self,
+        *,
+        symbol: str,
+        stop_price: float,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/order",
+            signed=True,
+            params={
+                "symbol": symbol,
+                "side": "SELL",
+                "type": "STOP_MARKET",
+                "stopPrice": _format_decimal(stop_price),
+                "closePosition": "true",
+                "workingType": "CONTRACT_PRICE",
+                "newClientOrderId": client_order_id,
+                "positionSide": "BOTH",
+            },
+        )
+
+    def cancel_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
+        return self.rest_client.request(
+            "DELETE",
+            "/fapi/v1/order",
+            signed=True,
+            params={"symbol": symbol, "origClientOrderId": client_order_id},
+        )
+
+    def test_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/order/test",
+            signed=True,
+            params={
+                "symbol": symbol,
+                "side": side,
+                "type": order_type,
+                "quantity": _format_decimal(quantity),
+                "newClientOrderId": client_order_id,
+                "positionSide": "BOTH",
+            },
+        )
+
+
+def _format_decimal(value: float) -> str:
+    return f"{float(value):.12f}".rstrip("0").rstrip(".")
