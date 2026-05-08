@@ -126,6 +126,68 @@ def _write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _rows_table(rows: list[dict[str, Any]]) -> pa.Table:
+    if not rows:
+        return pa.table({})
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    normalized_rows = [{key: row.get(key) for key in fieldnames} for row in rows]
+    return pa.Table.from_pylist(normalized_rows)
+
+
+def _signal_keep_rate(base_signal_count: int, filtered_signal_count: int) -> float | None:
+    if base_signal_count == 0:
+        return None
+    return filtered_signal_count / base_signal_count
+
+
+def _rule_parts(rule: Any) -> tuple[Any, ...]:
+    parts = getattr(rule, "parts", None)
+    if parts is None:
+        return (rule,)
+    return tuple(parts)
+
+
+def _rule_payload(rule: Any) -> dict[str, Any]:
+    parts = _rule_parts(rule)
+    return {
+        "rule_id": getattr(rule, "rule_id"),
+        "feature_name": getattr(rule, "feature_name"),
+        "direction": getattr(rule, "direction"),
+        "quantile": getattr(rule, "quantile"),
+        "threshold": _rounded(getattr(rule, "threshold")),
+        "component_count": len(parts),
+        "component_rule_ids": json.dumps([getattr(part, "rule_id") for part in parts]),
+        "component_feature_names": json.dumps([getattr(part, "feature_name") for part in parts]),
+        "component_directions": json.dumps([getattr(part, "direction") for part in parts]),
+        "component_quantiles": json.dumps([getattr(part, "quantile") for part in parts]),
+        "component_thresholds": json.dumps(
+            [_rounded(getattr(part, "threshold")) for part in parts]
+        ),
+    }
+
+
+def _selected_filter_payload(rule: Any, selected_train_row: dict[str, Any]) -> dict[str, Any]:
+    payload = _rule_payload(rule)
+    payload.update(
+        {
+            "threshold_source": "full_research_signal_distribution",
+            "selection_scope": "research_only",
+            "train_score": _rounded(selected_train_row.get("score")),
+            "train_trade_count": selected_train_row.get("trade_count"),
+            "train_base_signal_count": selected_train_row.get("base_signal_count"),
+            "train_filtered_signal_count": selected_train_row.get("filtered_signal_count"),
+            "train_signal_keep_rate": _rounded(selected_train_row.get("signal_keep_rate")),
+            "train_total_return": _rounded(selected_train_row.get("total_return")),
+            "train_max_drawdown": _rounded(selected_train_row.get("max_drawdown")),
+        }
+    )
+    return payload
+
+
 def _trade_schema() -> pa.Schema:
     return pa.schema(
         [
@@ -252,6 +314,84 @@ def write_trailing_run_artifacts(
     pq.write_table(_trades_table(result.trades), run_dir / "trades.parquet")
     pq.write_table(_equity_table(open_times, result), run_dir / "equity_curve.parquet")
     pq.write_table(_positions_table(symbols, open_times, result), run_dir / "daily_positions.parquet")
+    return run_dir
+
+
+def write_trailing_regime_holdout_artifacts(
+    *,
+    paths: VolumePriceEfficiencyPaths,
+    run_id: str,
+    config: VolumePriceEfficiencyConfig,
+    result: TrailingStopResult,
+    symbols: tuple[str, ...],
+    open_times: np.ndarray,
+    canonical_manifests: list[str],
+    git_commit: str,
+    runtime_seconds: float,
+    data_split: dict[str, Any],
+    atr_multiplier: float,
+    lookback_bars: int,
+    quantiles: tuple[float, ...],
+    feature_names: tuple[str, ...],
+    min_trades: int,
+    selected_rule: Any,
+    selected_train_row: dict[str, Any],
+    selection_rows: list[dict[str, Any]],
+    holdout_base_signal_count: int,
+    holdout_filtered_signal_count: int,
+) -> Path:
+    run_dir = paths.trailing_run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    summary = build_trailing_summary(result)
+    selected_filter = _selected_filter_payload(selected_rule, selected_train_row)
+    holdout_signal_keep_rate = _signal_keep_rate(
+        holdout_base_signal_count,
+        holdout_filtered_signal_count,
+    )
+    manifest = {
+        "strategy_name": config.strategy_name,
+        "strategy_version": "v1",
+        "run_type": "trailing_stop_regime_holdout",
+        "data_scope": "holdout_only_final_production_test",
+        "selection_scope": "research_only",
+        "threshold_scope": "full_research_signal_distribution",
+        "run_id": run_id,
+        "git_commit": git_commit,
+        "config": config.model_dump(mode="json"),
+        "config_hash": config.config_hash(),
+        "atr_multiplier": atr_multiplier,
+        "lookback_bars": lookback_bars,
+        "quantiles": list(quantiles),
+        "feature_names": list(feature_names),
+        "min_trades": min_trades,
+        "selected_rule_id": selected_filter["rule_id"],
+        "selected_filter": selected_filter,
+        "holdout_base_signal_count": holdout_base_signal_count,
+        "holdout_filtered_signal_count": holdout_filtered_signal_count,
+        "holdout_signal_keep_rate": _rounded(holdout_signal_keep_rate),
+        "canonical_manifests": canonical_manifests,
+        "symbol_count": len(symbols),
+        "symbols": list(symbols),
+        "runtime_seconds": runtime_seconds,
+        "data_split": data_split,
+        "outputs": {
+            "summary": str(run_dir / "summary.json"),
+            "trades": str(run_dir / "trades.parquet"),
+            "equity_curve": str(run_dir / "equity_curve.parquet"),
+            "daily_positions": str(run_dir / "daily_positions.parquet"),
+            "selected_filter": str(run_dir / "selected_filter.json"),
+            "selection_summary": str(run_dir / "selection_summary.parquet"),
+            "selection_summary_csv": str(run_dir / "selection_summary.csv"),
+        },
+    }
+    _write_json(run_dir / "manifest.json", manifest)
+    _write_json(run_dir / "summary.json", summary)
+    _write_json(run_dir / "selected_filter.json", selected_filter)
+    pq.write_table(_trades_table(result.trades), run_dir / "trades.parquet")
+    pq.write_table(_equity_table(open_times, result), run_dir / "equity_curve.parquet")
+    pq.write_table(_positions_table(symbols, open_times, result), run_dir / "daily_positions.parquet")
+    pq.write_table(_rows_table(selection_rows), run_dir / "selection_summary.parquet")
+    _write_summary_csv(run_dir / "selection_summary.csv", selection_rows)
     return run_dir
 
 

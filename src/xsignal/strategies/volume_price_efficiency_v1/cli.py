@@ -52,6 +52,7 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing_diagnostics import (
     write_trailing_diagnostic_artifacts,
 )
 from xsignal.strategies.volume_price_efficiency_v1.trailing_artifacts import (
+    write_trailing_regime_holdout_artifacts,
     write_trailing_scan_artifacts,
     write_trailing_run_artifacts,
 )
@@ -937,6 +938,247 @@ def _trail_regime_gate_sweep_command(args: argparse.Namespace) -> Path:
     return output
 
 
+def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
+    started = time.perf_counter()
+    if args.atr_multiplier != 2.0:
+        raise ValueError("atr_multiplier must stay fixed at 2.0 for regime holdout")
+    if args.stability_splits <= 0:
+        raise ValueError("stability_splits must be positive")
+    if args.stability_min_trades < 0:
+        raise ValueError("stability_min_trades must be non-negative")
+    if args.stability_min_positive_splits < 0:
+        raise ValueError("stability_min_positive_splits must be non-negative")
+    if args.max_rule_size <= 0:
+        raise ValueError("max_rule_size must be positive")
+    if args.max_rule_size > 2:
+        raise ValueError("max_rule_size currently supports at most 2")
+    if args.combo_seed_top_k <= 0:
+        raise ValueError("combo_seed_top_k must be positive")
+    if args.combo_min_score_lift_vs_best_component < 0.0:
+        raise ValueError("combo_min_score_lift_vs_best_component must be non-negative")
+    if args.combo_min_score_lift_vs_best_single < 0.0:
+        raise ValueError("combo_min_score_lift_vs_best_single must be non-negative")
+    if args.combo_min_component_outperformance_splits < 0:
+        raise ValueError("combo_min_component_outperformance_splits must be non-negative")
+    if args.combo_min_single_outperformance_splits < 0:
+        raise ValueError("combo_min_single_outperformance_splits must be non-negative")
+
+    config = VolumePriceEfficiencyConfig(
+        atr_window=args.atr_window,
+        volume_window=args.volume_window,
+        efficiency_lookback=args.efficiency_lookback,
+        efficiency_percentile=args.efficiency_percentile,
+        volume_floor=args.volume_floor,
+        min_move_unit=args.min_move_unit,
+        min_volume_unit=args.min_volume_unit,
+        min_close_position=args.min_close_position,
+        min_body_ratio=args.min_body_ratio,
+        fee_bps=args.fee_bps,
+        slippage_bps=args.slippage_bps,
+        baseline_seed=args.baseline_seed,
+    )
+    table, manifests = load_offline_ohlcv_table(Path(args.root), fill_policy=config.fill_policy)
+    arrays = prepare_ohlcv_arrays(table)
+    research_arrays, holdout_arrays, data_split = split_research_and_holdout(
+        arrays,
+        holdout_days=args.holdout_days,
+    )
+    if holdout_arrays is None:
+        raise ValueError("trail-regime-holdout requires a positive holdout window")
+
+    research_base_features = compute_features(research_arrays, config)
+    research_features = replace(
+        research_base_features,
+        signal=build_signal_mask(research_arrays, research_base_features, config),
+    )
+    research_values = build_regime_value_arrays(
+        research_arrays,
+        research_features,
+        lookback_bars=args.lookback_bars,
+    )
+    research_rules = build_regime_filter_rules(
+        research_features.signal,
+        research_values,
+        feature_names=args.feature_name,
+        quantiles=args.quantile,
+    )
+    rule_by_id = {rule.rule_id: rule for rule in research_rules}
+    research_base_signal_count = int(research_features.signal.sum())
+    run_id = args.run_id or uuid.uuid4().hex
+    stability_segments = _stability_segments(research_arrays.open.shape[0], args.stability_splits)
+    stability_min_trades = _stability_min_trades(args)
+    stability_min_positive_splits = _stability_min_positive_splits(args)
+
+    def evaluate_train_rule(rule):
+        filtered_signal = apply_regime_filter_rule(
+            research_features.signal,
+            research_values,
+            rule,
+        )
+        result = simulate_trailing_stop(
+            research_arrays,
+            replace(research_features, signal=filtered_signal),
+            config,
+            atr_multiplier=args.atr_multiplier,
+        )
+        row = build_regime_scan_row(
+            regime_scan_id=run_id,
+            config=config,
+            result=result,
+            symbols=research_arrays.symbols,
+            rule=rule,
+            base_signal_count=research_base_signal_count,
+            filtered_signal_count=int(filtered_signal.sum()),
+            atr_multiplier=args.atr_multiplier,
+        )
+        row.update(
+            {
+                "run_id": run_id,
+                "data_set": "research",
+                "threshold_source": "full_research_signal_distribution",
+                "is_selected": False,
+            }
+        )
+        if stability_segments:
+            segment_rows = []
+            for segment_index, segment_indices in enumerate(stability_segments):
+                segment_arrays = slice_ohlcv_arrays(research_arrays, segment_indices)
+                segment_features = slice_feature_arrays(research_features, segment_indices)
+                segment_values = _slice_regime_values(research_values, segment_indices)
+                filtered_segment_signal = apply_regime_filter_rule(
+                    segment_features.signal,
+                    segment_values,
+                    rule,
+                )
+                segment_result = simulate_trailing_stop(
+                    segment_arrays,
+                    replace(segment_features, signal=filtered_segment_signal),
+                    config,
+                    atr_multiplier=args.atr_multiplier,
+                )
+                segment_row = build_regime_scan_row(
+                    regime_scan_id=run_id,
+                    config=config,
+                    result=segment_result,
+                    symbols=segment_arrays.symbols,
+                    rule=rule,
+                    base_signal_count=int(segment_features.signal.sum()),
+                    filtered_signal_count=int(filtered_segment_signal.sum()),
+                    atr_multiplier=args.atr_multiplier,
+                )
+                segment_row.update(
+                    {
+                        "run_id": run_id,
+                        "stability_segment_index": segment_index,
+                    }
+                )
+                segment_rows.append(segment_row)
+            row.update(
+                build_regime_stability_summary(
+                    segment_rows,
+                    split_count=args.stability_splits,
+                    min_trades=stability_min_trades,
+                    include_values=True,
+                )
+            )
+        return row
+
+    train_rows = [evaluate_train_rule(rule) for rule in research_rules]
+    if args.max_rule_size > 1:
+        seed_rows = select_top_regime_filters(
+            train_rows,
+            top_k=args.combo_seed_top_k,
+            min_trades=args.min_trades,
+        )
+        seed_rules = tuple(rule_by_id[str(row["rule_id"])] for row in seed_rows)
+        combo_rules = build_composite_regime_filter_rules(
+            seed_rules,
+            combo_size=args.max_rule_size,
+        )
+        for rule in combo_rules:
+            rule_by_id[rule.rule_id] = rule
+            train_rows.append(evaluate_train_rule(rule))
+
+    selection_candidate_rows = filter_combo_regime_candidates(
+        train_rows,
+        allow_combo_selection=args.allow_combo_selection,
+        min_score_lift_vs_best_component=args.combo_min_score_lift_vs_best_component,
+        min_score_lift_vs_best_single=args.combo_min_score_lift_vs_best_single,
+        min_component_outperformance_splits=args.combo_min_component_outperformance_splits,
+        min_single_outperformance_splits=args.combo_min_single_outperformance_splits,
+    )
+    if args.stability_splits > 1:
+        selected = select_stable_regime_filters(
+            selection_candidate_rows,
+            top_k=1,
+            min_trades=args.min_trades,
+            stability_min_positive_splits=stability_min_positive_splits,
+        )
+    else:
+        selected = select_top_regime_filters(
+            selection_candidate_rows,
+            top_k=1,
+            min_trades=args.min_trades,
+        )
+    if not selected:
+        raise ValueError("no eligible research regime filter matched the selection constraints")
+    selected_train_row = selected[0]
+    selected_train_row["is_selected"] = True
+    selected_rule = rule_by_id[str(selected_train_row["rule_id"])]
+
+    full_base_features = compute_features(arrays, config)
+    full_features = replace(
+        full_base_features,
+        signal=build_signal_mask(arrays, full_base_features, config),
+    )
+    full_values = build_regime_value_arrays(
+        arrays,
+        full_features,
+        lookback_bars=args.lookback_bars,
+    )
+    holdout_mask = holdout_mask_for_open_times(arrays.open_times, holdout_days=args.holdout_days)
+    holdout_indices = np.flatnonzero(holdout_mask)
+    holdout_features = slice_feature_arrays(full_features, holdout_indices)
+    holdout_values = _slice_regime_values(full_values, holdout_indices)
+    filtered_holdout_signal = apply_regime_filter_rule(
+        holdout_features.signal,
+        holdout_values,
+        selected_rule,
+    )
+    holdout_result = simulate_trailing_stop(
+        holdout_arrays,
+        replace(holdout_features, signal=filtered_holdout_signal),
+        config,
+        atr_multiplier=args.atr_multiplier,
+    )
+
+    runtime_seconds = time.perf_counter() - started
+    output = write_trailing_regime_holdout_artifacts(
+        paths=VolumePriceEfficiencyPaths(root=Path(args.root)),
+        run_id=run_id,
+        config=config,
+        result=holdout_result,
+        symbols=holdout_arrays.symbols,
+        open_times=holdout_arrays.open_times,
+        canonical_manifests=[str(path) for path in manifests],
+        git_commit=_git_commit(),
+        runtime_seconds=runtime_seconds,
+        data_split=data_split,
+        atr_multiplier=args.atr_multiplier,
+        lookback_bars=args.lookback_bars,
+        quantiles=args.quantile,
+        feature_names=args.feature_name,
+        min_trades=args.min_trades,
+        selected_rule=selected_rule,
+        selected_train_row=selected_train_row,
+        selection_rows=train_rows,
+        holdout_base_signal_count=int(holdout_features.signal.sum()),
+        holdout_filtered_signal_count=int(filtered_holdout_signal.sum()),
+    )
+    print(output)
+    return output
+
+
 def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     if args.atr_multiplier != 2.0:
@@ -1311,6 +1553,68 @@ def main(argv: list[str] | None = None) -> int:
     trail_parser.add_argument("--holdout-days", type=int, default=180)
     trail_parser.add_argument("--atr-multiplier", type=float, default=2.0)
     trail_parser.set_defaults(func=_trail_command)
+
+    trail_regime_holdout_parser = subparsers.add_parser("trail-regime-holdout")
+    trail_regime_holdout_parser.add_argument("--root", default="data")
+    trail_regime_holdout_parser.add_argument("--run-id")
+    trail_regime_holdout_parser.add_argument("--offline", action="store_true", required=True)
+    trail_regime_holdout_parser.add_argument("--atr-window", type=int, default=14)
+    trail_regime_holdout_parser.add_argument("--volume-window", type=int, default=60)
+    trail_regime_holdout_parser.add_argument("--efficiency-lookback", type=int, default=120)
+    trail_regime_holdout_parser.add_argument("--efficiency-percentile", type=float, default=0.90)
+    trail_regime_holdout_parser.add_argument("--volume-floor", type=float, default=0.2)
+    trail_regime_holdout_parser.add_argument("--min-move-unit", type=float, default=0.5)
+    trail_regime_holdout_parser.add_argument("--min-volume-unit", type=float, default=0.3)
+    trail_regime_holdout_parser.add_argument("--min-close-position", type=float, default=0.7)
+    trail_regime_holdout_parser.add_argument("--min-body-ratio", type=float, default=0.4)
+    trail_regime_holdout_parser.add_argument("--fee-bps", type=float, default=5.0)
+    trail_regime_holdout_parser.add_argument("--slippage-bps", type=float, default=5.0)
+    trail_regime_holdout_parser.add_argument("--baseline-seed", type=int, default=17)
+    trail_regime_holdout_parser.add_argument("--holdout-days", type=int, default=180)
+    trail_regime_holdout_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    trail_regime_holdout_parser.add_argument("--lookback-bars", type=int, default=30)
+    trail_regime_holdout_parser.add_argument(
+        "--feature-name",
+        type=_parse_string_grid,
+        default=DEFAULT_REGIME_FEATURES,
+    )
+    trail_regime_holdout_parser.add_argument(
+        "--quantile",
+        type=_parse_float_grid,
+        default=(0.2, 0.4, 0.6, 0.8),
+    )
+    trail_regime_holdout_parser.add_argument("--min-trades", type=int, default=200)
+    trail_regime_holdout_parser.add_argument("--max-rule-size", type=int, default=1)
+    trail_regime_holdout_parser.add_argument("--combo-seed-top-k", type=int, default=12)
+    trail_regime_holdout_parser.add_argument("--allow-combo-selection", action="store_true")
+    trail_regime_holdout_parser.add_argument(
+        "--combo-min-score-lift-vs-best-component",
+        type=float,
+        default=0.0,
+    )
+    trail_regime_holdout_parser.add_argument(
+        "--combo-min-score-lift-vs-best-single",
+        type=float,
+        default=0.0,
+    )
+    trail_regime_holdout_parser.add_argument(
+        "--combo-min-component-outperformance-splits",
+        type=int,
+        default=0,
+    )
+    trail_regime_holdout_parser.add_argument(
+        "--combo-min-single-outperformance-splits",
+        type=int,
+        default=0,
+    )
+    trail_regime_holdout_parser.add_argument("--stability-splits", type=int, default=1)
+    trail_regime_holdout_parser.add_argument("--stability-min-trades", type=int, default=0)
+    trail_regime_holdout_parser.add_argument(
+        "--stability-min-positive-splits",
+        type=int,
+        default=0,
+    )
+    trail_regime_holdout_parser.set_defaults(func=_trail_regime_holdout_command)
 
     trail_scan_parser = subparsers.add_parser("trail-scan")
     trail_scan_parser.add_argument("--root", default="data")

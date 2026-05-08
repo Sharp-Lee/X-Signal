@@ -18,7 +18,11 @@ from xsignal.strategies.volume_price_efficiency_v1.trailing import (
 from xsignal.strategies.volume_price_efficiency_v1.trailing_artifacts import (
     build_trailing_summary,
     write_trailing_scan_artifacts,
+    write_trailing_regime_holdout_artifacts,
     write_trailing_run_artifacts,
+)
+from xsignal.strategies.volume_price_efficiency_v1.trailing_regime_scan import (
+    RegimeFilterRule,
 )
 
 
@@ -170,6 +174,88 @@ def test_write_trailing_run_artifacts_writes_empty_trade_table(tmp_path):
 
     assert pq.read_table(run_dir / "trades.parquet").num_rows == 0
     assert pq.read_table(run_dir / "daily_positions.parquet").num_rows == 0
+
+
+def test_write_trailing_regime_holdout_artifacts_records_research_selection(tmp_path):
+    paths = VolumePriceEfficiencyPaths(root=tmp_path)
+    config = VolumePriceEfficiencyConfig()
+    result = _result()
+    selected_rule = RegimeFilterRule(
+        rule_id="move_unit_gte_p50",
+        feature_name="move_unit",
+        direction="gte",
+        quantile=0.5,
+        threshold=2.0,
+    )
+
+    run_dir = write_trailing_regime_holdout_artifacts(
+        paths=paths,
+        run_id="regime-holdout",
+        config=config,
+        result=result,
+        symbols=("BTCUSDT", "ETHUSDT"),
+        open_times=np.array(
+            [
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T04:00:00+00:00",
+                "2026-01-01T08:00:00+00:00",
+            ],
+            dtype=object,
+        ),
+        canonical_manifests=["manifest.json"],
+        git_commit="abc123",
+        runtime_seconds=1.5,
+        data_split={"holdout_days": 180},
+        atr_multiplier=2.0,
+        lookback_bars=30,
+        quantiles=(0.5,),
+        feature_names=("move_unit",),
+        min_trades=10,
+        selected_rule=selected_rule,
+        selected_train_row={
+            "rule_id": "move_unit_gte_p50",
+            "score": 0.04,
+            "trade_count": 22,
+            "base_signal_count": 80,
+            "filtered_signal_count": 40,
+        },
+        selection_rows=[
+            {
+                "rule_id": "move_unit_gte_p50",
+                "score": 0.04,
+                "trade_count": 22,
+            }
+        ],
+        holdout_base_signal_count=30,
+        holdout_filtered_signal_count=12,
+    )
+
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    selected_filter = json.loads((run_dir / "selected_filter.json").read_text())
+    assert run_dir == paths.trailing_run_dir("regime-holdout")
+    assert manifest["run_type"] == "trailing_stop_regime_holdout"
+    assert manifest["data_scope"] == "holdout_only_final_production_test"
+    assert manifest["selection_scope"] == "research_only"
+    assert manifest["threshold_scope"] == "full_research_signal_distribution"
+    assert manifest["selected_rule_id"] == "move_unit_gte_p50"
+    assert manifest["holdout_base_signal_count"] == 30
+    assert manifest["holdout_filtered_signal_count"] == 12
+    assert manifest["holdout_signal_keep_rate"] == 0.4
+    assert set(manifest["outputs"]) == {
+        "summary",
+        "trades",
+        "equity_curve",
+        "daily_positions",
+        "selected_filter",
+        "selection_summary",
+        "selection_summary_csv",
+    }
+    assert selected_filter["rule_id"] == "move_unit_gte_p50"
+    assert selected_filter["threshold"] == 2.0
+    assert selected_filter["train_score"] == 0.04
+    assert pq.read_table(run_dir / "selection_summary.parquet").to_pylist() == [
+        {"rule_id": "move_unit_gte_p50", "score": 0.04, "trade_count": 22}
+    ]
 
 
 def test_write_trailing_scan_artifacts_creates_manifest_summary_csv_and_top_configs(tmp_path):
