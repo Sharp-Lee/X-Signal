@@ -1357,6 +1357,147 @@ def test_cli_trail_regime_walk_forward_can_select_train_fold_combo_rule(
     assert fold_rows[0]["validation_filtered_signal_count"] == 1
 
 
+def test_cli_trail_regime_walk_forward_combo_gate_can_reject_train_fold_combo_rule(
+    tmp_path,
+    monkeypatch,
+):
+    all_arrays = _arrays(14)
+    research_arrays = _arrays(12)
+    holdout_arrays = _arrays(2)
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        lambda split_arrays, *, holdout_days: (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-02T20:00:00Z",
+                "holdout_start": "2026-01-03T00:00:00Z",
+                "holdout_end": "2026-01-03T04:00:00Z",
+            },
+        ),
+    )
+
+    signal = np.zeros((12, 1), dtype=bool)
+    signal[[1, 2, 3, 4, 7, 8, 9, 10], 0] = True
+    move = np.zeros((12, 1), dtype=np.float64)
+    move[:12, 0] = [0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0]
+    volume = np.zeros((12, 1), dtype=np.float64)
+    volume[:12, 0] = [0.0, 1.0, 4.0, 1.0, 4.0, 0.0, 0.0, 1.0, 4.0, 1.0, 4.0, 0.0]
+
+    def fake_features(row_count):
+        return FeatureArrays(
+            true_range=np.ones((row_count, 1), dtype=np.float64),
+            atr=np.ones((row_count, 1), dtype=np.float64),
+            move_unit=move[:row_count].copy(),
+            volume_baseline=np.ones((row_count, 1), dtype=np.float64),
+            volume_unit=volume[:row_count].copy(),
+            efficiency=move[:row_count].copy(),
+            efficiency_threshold=np.zeros((row_count, 1), dtype=np.float64),
+            close_position=np.full((row_count, 1), 0.9),
+            body_ratio=np.full((row_count, 1), 0.9),
+            signal=signal[:row_count].copy(),
+        )
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        signal_indices = tuple(int(index) for index in np.flatnonzero(features.signal[:, 0]))
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        final_equity = 1.2 if signal_indices == (4,) else 1.0 + len(signal_indices) / 100.0
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "signal_open_time": sim_arrays.open_times[index].isoformat(),
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+                for index in signal_indices
+            ],
+            equity=np.array([1.0, final_equity], dtype=np.float64),
+            period_returns=np.array([final_equity - 1.0], dtype=np.float64),
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        lambda feature_arrays, _config: fake_features(feature_arrays.open.shape[0]),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_signal_mask",
+        lambda _arrays, _features, _config: signal,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-walk-forward",
+            "--root",
+            str(tmp_path),
+            "--offline",
+            "--regime-walk-forward-id",
+            "combo-gated-rwf",
+            "--holdout-days",
+            "7",
+            "--train-days",
+            "1",
+            "--test-days",
+            "1",
+            "--step-days",
+            "1",
+            "--feature-name",
+            "move_unit,volume_unit",
+            "--quantile",
+            "0.5",
+            "--min-trades",
+            "1",
+            "--top-k",
+            "1",
+            "--max-rule-size",
+            "2",
+            "--combo-seed-top-k",
+            "4",
+            "--allow-combo-selection",
+            "--combo-min-score-lift-vs-best-single",
+            "0.5",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_regime_walk_forwards"
+        / "combo-gated-rwf"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    fold_rows = pq.read_table(output_dir / "fold_summary.parquet").to_pylist()
+    assert exit_code == 0
+    assert manifest["combo_min_score_lift_vs_best_single"] == 0.5
+    assert fold_rows[0]["component_count"] == 1
+    assert "__and__" not in fold_rows[0]["rule_id"]
+
+
 def test_cli_trail_regime_walk_forward_refuses_non_offline_mode(tmp_path):
     try:
         main(["trail-regime-walk-forward", "--root", str(tmp_path), "--regime-walk-forward-id", "online"])
