@@ -64,3 +64,9 @@ class OrderIntent:
     price: float | None
     stop_price: float | None
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class RiskResult:
+    accepted: bool
+    reason: str
