@@ -316,6 +316,8 @@ def test_write_trailing_regime_scan_artifacts(tmp_path):
         symbol_count=2,
         data_split={"holdout_days": 180},
         atr_multiplier=2.0,
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
         lookback_bars=30,
         quantiles=(0.2, 0.8),
         feature_names=("market_lookback_return",),
@@ -326,6 +328,8 @@ def test_write_trailing_regime_scan_artifacts(tmp_path):
     assert manifest["run_type"] == "trailing_stop_research_regime_scan"
     assert manifest["data_scope"] == "research_only"
     assert manifest["threshold_scope"] == "full_research_signal_distribution_diagnostic_only"
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert set(manifest["outputs"]) == {"summary", "summary_csv", "top_filters"}
     assert pq.read_table(output / "summary.parquet").num_rows == 1
     assert json.loads((output / "top_filters.json").read_text())[0]["rule_id"] == "unfiltered"

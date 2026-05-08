@@ -178,12 +178,16 @@ def test_write_trailing_diagnostic_artifacts(tmp_path):
         runtime_seconds=1.5,
         data_split={"holdout_days": 180},
         atr_multiplier=2.0,
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
         lookback_bars=30,
     )
 
     manifest = json.loads((output / "manifest.json").read_text())
     assert output == paths.trailing_diagnostic_dir("diag")
     assert manifest["run_type"] == "trailing_stop_diagnostics"
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert set(manifest["outputs"]) == {"time_summary", "bucket_summary"}
     assert pq.read_table(output / "time_summary.parquet").num_rows == 2
     assert pq.read_table(output / "bucket_summary.parquet").num_rows == 2

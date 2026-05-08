@@ -212,6 +212,40 @@ def _validate_atr_multiplier_grid(values: tuple[float, ...]) -> tuple[float, ...
     return values
 
 
+def _pyramid_kwargs(args: argparse.Namespace) -> dict[str, float | int]:
+    pyramid_max_adds = int(getattr(args, "pyramid_max_adds", 0) or 0)
+    pyramid_add_step_atr = getattr(args, "pyramid_add_step_atr", None)
+    if pyramid_max_adds < 0:
+        raise ValueError("pyramid_max_adds must be non-negative")
+    if pyramid_max_adds == 0:
+        if pyramid_add_step_atr is not None and pyramid_add_step_atr <= 0.0:
+            raise ValueError("pyramid_add_step_atr must be positive")
+        return {}
+    if pyramid_add_step_atr is None or pyramid_add_step_atr <= 0.0:
+        raise ValueError("pyramid_add_step_atr must be positive when pyramid_max_adds is enabled")
+    return {
+        "pyramid_add_step_atr": float(pyramid_add_step_atr),
+        "pyramid_max_adds": pyramid_max_adds,
+    }
+
+
+def _simulate_trailing_stop_from_args(
+    args: argparse.Namespace,
+    arrays,
+    features,
+    config,
+    *,
+    atr_multiplier: float,
+):
+    return simulate_trailing_stop(
+        arrays,
+        features,
+        config,
+        atr_multiplier=atr_multiplier,
+        **_pyramid_kwargs(args),
+    )
+
+
 def _scan_command(args: argparse.Namespace) -> Path:
     started = time.perf_counter()
     configs = build_scan_configs(**_scan_config_kwargs(args))
@@ -312,7 +346,8 @@ def _trail_command(args: argparse.Namespace) -> Path:
         body_ratio=full_features.body_ratio[holdout_mask],
         signal=full_features.signal[holdout_mask],
     )
-    result = simulate_trailing_stop(
+    result = _simulate_trailing_stop_from_args(
+        args,
         holdout_arrays,
         features,
         config,
@@ -332,6 +367,8 @@ def _trail_command(args: argparse.Namespace) -> Path:
         runtime_seconds=runtime_seconds,
         data_split=data_split,
         atr_multiplier=atr_multiplier,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
     )
     print(output)
     return output
@@ -369,7 +406,8 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
             signal=build_signal_mask(research_arrays, cached_features, config),
         )
         for atr_multiplier in atr_multipliers:
-            result = simulate_trailing_stop(
+            result = _simulate_trailing_stop_from_args(
+                args,
                 research_arrays,
                 features,
                 config,
@@ -404,6 +442,8 @@ def _trail_scan_command(args: argparse.Namespace) -> Path:
         data_split=data_split,
         atr_multiplier=atr_multipliers[0],
         atr_multipliers=atr_multipliers,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
         min_trades=args.min_trades,
     )
     print(output)
@@ -428,7 +468,8 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         research_base,
         signal=build_signal_mask(research_arrays, research_base, config),
     )
-    research_result = simulate_trailing_stop(
+    research_result = _simulate_trailing_stop_from_args(
+        args,
         research_arrays,
         research_features,
         config,
@@ -449,7 +490,8 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         body_ratio=full_features.body_ratio[holdout_mask],
         signal=full_features.signal[holdout_mask],
     )
-    holdout_result = simulate_trailing_stop(
+    holdout_result = _simulate_trailing_stop_from_args(
+        args,
         holdout_arrays,
         holdout_features,
         config,
@@ -488,6 +530,8 @@ def _trail_diagnose_command(args: argparse.Namespace) -> Path:
         data_split=data_split,
         atr_multiplier=atr_multiplier,
         lookback_bars=args.lookback_bars,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
     )
     print(output)
     return output
@@ -554,7 +598,8 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
                 research_signal_cache[config.config_hash()] = features
             train_features = slice_feature_arrays(features, fold.train_indices)
             for atr_multiplier in atr_multipliers:
-                result = simulate_trailing_stop(
+                result = _simulate_trailing_stop_from_args(
+                    args,
                     train_arrays,
                     train_features,
                     config,
@@ -603,7 +648,8 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
                 research_signal_cache[selected_config.config_hash()] = selected_features
             validation_arrays = slice_ohlcv_arrays(research_arrays, fold.test_indices)
             validation_features = slice_feature_arrays(selected_features, fold.test_indices)
-            validation_result = simulate_trailing_stop(
+            validation_result = _simulate_trailing_stop_from_args(
+                args,
                 validation_arrays,
                 validation_features,
                 selected_config,
@@ -649,6 +695,8 @@ def _trail_walk_forward_command(args: argparse.Namespace) -> Path:
         data_split=data_split,
         atr_multiplier=atr_multipliers[0],
         atr_multipliers=atr_multipliers,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
         train_days=args.train_days,
         test_days=args.test_days,
         step_days=args.step_days,
@@ -688,7 +736,8 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
     base_signal_count = int(features.signal.sum())
     rows = []
     for atr_multiplier in atr_multipliers:
-        base_result = simulate_trailing_stop(
+        base_result = _simulate_trailing_stop_from_args(
+            args,
             research_arrays,
             features,
             config,
@@ -709,7 +758,8 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
         for rule in rules:
             filtered_signal = apply_regime_filter_rule(features.signal, values_by_feature, rule)
             filtered_features = replace(features, signal=filtered_signal)
-            result = simulate_trailing_stop(
+            result = _simulate_trailing_stop_from_args(
+                args,
                 research_arrays,
                 filtered_features,
                 config,
@@ -747,6 +797,8 @@ def _trail_regime_scan_command(args: argparse.Namespace) -> Path:
         data_split=data_split,
         atr_multiplier=atr_multipliers[0],
         atr_multipliers=atr_multipliers,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
         lookback_bars=args.lookback_bars,
         quantiles=args.quantile,
         feature_names=args.feature_name,
@@ -993,7 +1045,8 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
             research_values,
             rule,
         )
-        result = simulate_trailing_stop(
+        result = _simulate_trailing_stop_from_args(
+            args,
             research_arrays,
             replace(research_features, signal=filtered_signal),
             config,
@@ -1028,7 +1081,8 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
                     segment_values,
                     rule,
                 )
-                segment_result = simulate_trailing_stop(
+                segment_result = _simulate_trailing_stop_from_args(
+                    args,
                     segment_arrays,
                     replace(segment_features, signal=filtered_segment_signal),
                     config,
@@ -1123,7 +1177,8 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         holdout_values,
         selected_rule,
     )
-    holdout_result = simulate_trailing_stop(
+    holdout_result = _simulate_trailing_stop_from_args(
+        args,
         holdout_arrays,
         replace(holdout_features, signal=filtered_holdout_signal),
         config,
@@ -1152,6 +1207,8 @@ def _trail_regime_holdout_command(args: argparse.Namespace) -> Path:
         selection_rows=train_rows,
         holdout_base_signal_count=int(holdout_features.signal.sum()),
         holdout_filtered_signal_count=int(filtered_holdout_signal.sum()),
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
     )
     print(output)
     return output
@@ -1232,7 +1289,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 train_values,
                 rule,
             )
-            result = simulate_trailing_stop(
+            result = _simulate_trailing_stop_from_args(
+                args,
                 train_arrays,
                 replace(train_features, signal=filtered_train_signal),
                 config,
@@ -1271,7 +1329,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                         segment_values,
                         rule,
                     )
-                    segment_result = simulate_trailing_stop(
+                    segment_result = _simulate_trailing_stop_from_args(
+                        args,
                         segment_arrays,
                         replace(segment_features, signal=filtered_segment_signal),
                         config,
@@ -1364,7 +1423,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
                 validation_values,
                 selected_rule,
             )
-            validation_result = simulate_trailing_stop(
+            validation_result = _simulate_trailing_stop_from_args(
+                args,
                 validation_arrays,
                 replace(validation_features, signal=filtered_validation_signal),
                 config,
@@ -1440,6 +1500,8 @@ def _trail_regime_walk_forward_command(args: argparse.Namespace) -> Path:
         data_split=data_split,
         atr_multiplier=atr_multipliers[0],
         atr_multipliers=atr_multipliers,
+        pyramid_add_step_atr=args.pyramid_add_step_atr,
+        pyramid_max_adds=args.pyramid_max_adds,
         lookback_bars=args.lookback_bars,
         train_days=args.train_days,
         test_days=args.test_days,
@@ -1480,6 +1542,11 @@ def _add_seed_signal_arguments(parser: argparse.ArgumentParser, *, grid: bool = 
     parser.add_argument("--seed-max-volume-unit", type=float_type, default=default_value(1.2))
     parser.add_argument("--seed-bottom-lookback", type=int_type, default=default_value(30))
     parser.add_argument("--seed-max-close-position-in-range", type=float_type, default=default_value(0.6))
+
+
+def _add_pyramid_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--pyramid-add-step-atr", type=float)
+    parser.add_argument("--pyramid-max-adds", type=int, default=0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1542,6 +1609,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_parser)
     trail_parser.add_argument("--holdout-days", type=int, default=180)
     trail_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    _add_pyramid_arguments(trail_parser)
     trail_parser.set_defaults(func=_trail_command)
 
     trail_regime_holdout_parser = subparsers.add_parser("trail-regime-holdout")
@@ -1563,6 +1631,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_regime_holdout_parser)
     trail_regime_holdout_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_holdout_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    _add_pyramid_arguments(trail_regime_holdout_parser)
     trail_regime_holdout_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_regime_holdout_parser.add_argument(
         "--feature-name",
@@ -1622,6 +1691,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_scan_parser, grid=True)
     trail_scan_parser.add_argument("--holdout-days", type=int, default=180)
     trail_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
+    _add_pyramid_arguments(trail_scan_parser)
     trail_scan_parser.add_argument("--top-k", type=int, default=20)
     trail_scan_parser.add_argument("--min-trades", type=int, default=200)
     trail_scan_parser.set_defaults(func=_trail_scan_command)
@@ -1645,6 +1715,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_diagnose_parser)
     trail_diagnose_parser.add_argument("--holdout-days", type=int, default=180)
     trail_diagnose_parser.add_argument("--atr-multiplier", type=float, default=2.0)
+    _add_pyramid_arguments(trail_diagnose_parser)
     trail_diagnose_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_diagnose_parser.set_defaults(func=_trail_diagnose_command)
 
@@ -1671,6 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_walk_forward_parser, grid=True)
     trail_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
     trail_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
+    _add_pyramid_arguments(trail_walk_forward_parser)
     trail_walk_forward_parser.add_argument("--train-days", type=int, default=720)
     trail_walk_forward_parser.add_argument("--test-days", type=int, default=90)
     trail_walk_forward_parser.add_argument("--step-days", type=int, default=90)
@@ -1697,6 +1769,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_regime_scan_parser)
     trail_regime_scan_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_scan_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
+    _add_pyramid_arguments(trail_regime_scan_parser)
     trail_regime_scan_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_regime_scan_parser.add_argument(
         "--feature-name",
@@ -1752,6 +1825,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_seed_signal_arguments(trail_regime_walk_forward_parser)
     trail_regime_walk_forward_parser.add_argument("--holdout-days", type=int, default=180)
     trail_regime_walk_forward_parser.add_argument("--atr-multiplier", type=_parse_float_grid, default=(2.0,))
+    _add_pyramid_arguments(trail_regime_walk_forward_parser)
     trail_regime_walk_forward_parser.add_argument("--lookback-bars", type=int, default=30)
     trail_regime_walk_forward_parser.add_argument("--train-days", type=int, default=720)
     trail_regime_walk_forward_parser.add_argument("--test-days", type=int, default=90)

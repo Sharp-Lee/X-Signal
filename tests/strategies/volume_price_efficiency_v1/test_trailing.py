@@ -141,6 +141,65 @@ def test_trailing_simulation_ignores_signals_while_position_is_open():
     assert result.trades[0]["ignored_signal_count"] == 1
 
 
+def test_trailing_simulation_can_add_one_pyramid_lot_at_next_open():
+    arrays = _arrays(
+        open_values=[100, 100, 106, 109],
+        high_values=[104, 106, 120, 111],
+        low_values=[96, 99, 105, 109],
+        close_values=[103, 105, 119, 110],
+        quote_volume_values=[1000, 1000, 1000, 1000],
+    )
+    features = _features({0}, row_count=4, atr_values=[5, 5, 5, 5])
+
+    result = simulate_trailing_stop(
+        arrays,
+        features,
+        VolumePriceEfficiencyConfig(fee_bps=0, slippage_bps=0),
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade["entry_open_time"] == "2026-01-01T04:00:00+00:00"
+    assert trade["last_entry_open_time"] == "2026-01-01T08:00:00+00:00"
+    assert trade["lot_count"] == 2
+    assert trade["add_count"] == 1
+    assert trade["entry_price"] == 100.0
+    assert trade["average_entry_price"] == 103.0
+    assert trade["exit_price"] == 110.0
+    assert trade["net_realized_return"] == pytest.approx(0.10 + (110.0 / 106.0 - 1.0))
+    assert trade["best_lot_net_realized_return"] == pytest.approx(0.10)
+    assert trade["worst_lot_net_realized_return"] == pytest.approx(110.0 / 106.0 - 1.0)
+    assert result.period_returns.tolist() == pytest.approx(
+        [0.0, 0.0, 0.10 + (110.0 / 106.0 - 1.0)]
+    )
+
+
+def test_trailing_simulation_does_not_add_when_next_open_loses_trigger():
+    arrays = _arrays(
+        open_values=[100, 100, 104, 109],
+        high_values=[104, 106, 120, 111],
+        low_values=[96, 99, 103, 109],
+        close_values=[103, 105, 119, 110],
+        quote_volume_values=[1000, 1000, 1000, 1000],
+    )
+    features = _features({0}, row_count=4, atr_values=[5, 5, 5, 5])
+
+    result = simulate_trailing_stop(
+        arrays,
+        features,
+        VolumePriceEfficiencyConfig(fee_bps=0, slippage_bps=0),
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0]["lot_count"] == 1
+    assert result.trades[0]["add_count"] == 0
+    assert result.trades[0]["net_realized_return"] == pytest.approx(0.10)
+
+
 def test_trailing_simulation_allows_reentry_after_exit():
     arrays = _arrays(
         open_values=[100, 100, 96, 100, 99],

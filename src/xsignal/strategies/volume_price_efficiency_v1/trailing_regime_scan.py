@@ -487,6 +487,8 @@ def write_trailing_regime_scan_artifacts(
     quantiles: tuple[float, ...],
     feature_names: tuple[str, ...],
     atr_multipliers: tuple[float, ...] | None = None,
+    pyramid_add_step_atr: float | None = None,
+    pyramid_max_adds: int = 0,
 ) -> Path:
     output_dir = paths.trailing_regime_scan_dir(regime_scan_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -502,6 +504,8 @@ def write_trailing_regime_scan_artifacts(
         "config_hash": config.config_hash(),
         "atr_multiplier": atr_multiplier,
         "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
+        "pyramid_add_step_atr": pyramid_add_step_atr,
+        "pyramid_max_adds": pyramid_max_adds,
         "lookback_bars": lookback_bars,
         "quantiles": list(quantiles),
         "feature_names": list(feature_names),

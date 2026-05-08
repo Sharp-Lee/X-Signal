@@ -244,6 +244,104 @@ def test_cli_trail_accepts_explicit_non_default_atr_multiplier(tmp_path, monkeyp
     assert manifest["atr_multiplier"] == 3.0
 
 
+def test_cli_trail_accepts_pyramid_add_parameters(tmp_path, monkeypatch):
+    all_arrays = _arrays(4)
+    holdout_arrays = _arrays(2)
+    captured = {"simulate": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("1d", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        lambda _split_arrays, *, holdout_days: (
+            _arrays(2),
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T04:00:00Z",
+                "holdout_start": "2026-01-01T08:00:00Z",
+                "holdout_end": "2026-01-01T12:00:00Z",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.holdout_mask_for_open_times",
+        lambda _open_times, *, holdout_days: np.array([False, False, True, True], dtype=bool),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        lambda feature_arrays, _config: _features(feature_arrays.open.shape[0]),
+    )
+
+    def fake_simulate(
+        sim_arrays,
+        features,
+        config,
+        *,
+        atr_multiplier,
+        pyramid_add_step_atr=None,
+        pyramid_max_adds=0,
+    ):
+        captured["simulate"].append(
+            (atr_multiplier, pyramid_add_step_atr, pyramid_max_adds)
+        )
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        return TrailingStopResult(
+            trades=[],
+            equity=np.ones(sim_arrays.open.shape[0], dtype=np.float64),
+            period_returns=np.zeros(max(sim_arrays.open.shape[0] - 1, 0), dtype=np.float64),
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail",
+            "--root",
+            str(tmp_path),
+            "--run-id",
+            "pyramid",
+            "--offline",
+            "--atr-multiplier",
+            "3.0",
+            "--pyramid-add-step-atr",
+            "1.0",
+            "--pyramid-max-adds",
+            "1",
+        ]
+    )
+
+    run_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_runs"
+        / "pyramid"
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert exit_code == 0
+    assert captured["simulate"] == [(3.0, 1.0, 1)]
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
+
+
 def test_cli_trail_regime_holdout_trains_rule_on_research_then_runs_holdout(
     tmp_path,
     monkeypatch,
@@ -429,8 +527,18 @@ def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, m
         captured["features"].append((feature_arrays, config))
         return _features(feature_arrays.open.shape[0])
 
-    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
-        captured["simulate"].append((sim_arrays, features, config, atr_multiplier))
+    def fake_simulate(
+        sim_arrays,
+        features,
+        config,
+        *,
+        atr_multiplier,
+        pyramid_add_step_atr=None,
+        pyramid_max_adds=0,
+    ):
+        captured["simulate"].append(
+            (sim_arrays, features, config, atr_multiplier, pyramid_add_step_atr, pyramid_max_adds)
+        )
         from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
 
         return TrailingStopResult(
@@ -576,8 +684,18 @@ def test_cli_trail_diagnose_writes_research_and_holdout_diagnostics(tmp_path, mo
             },
         )
 
-    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
-        captured["simulate"].append((sim_arrays, features, config, atr_multiplier))
+    def fake_simulate(
+        sim_arrays,
+        features,
+        config,
+        *,
+        atr_multiplier,
+        pyramid_add_step_atr,
+        pyramid_max_adds,
+    ):
+        captured["simulate"].append(
+            (sim_arrays, features, config, atr_multiplier, pyramid_add_step_atr, pyramid_max_adds)
+        )
         from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
 
         return TrailingStopResult(
@@ -631,6 +749,10 @@ def test_cli_trail_diagnose_writes_research_and_holdout_diagnostics(tmp_path, mo
             "7",
             "--lookback-bars",
             "2",
+            "--pyramid-add-step-atr",
+            "1.0",
+            "--pyramid-max-adds",
+            "1",
         ]
     )
 
@@ -645,8 +767,11 @@ def test_cli_trail_diagnose_writes_research_and_holdout_diagnostics(tmp_path, mo
     assert exit_code == 0
     assert captured["split"] == [(all_arrays, 7)]
     assert [call[0] for call in captured["simulate"]] == [research_arrays, holdout_arrays]
+    assert [call[4:] for call in captured["simulate"]] == [(1.0, 1), (1.0, 1)]
     assert manifest["run_type"] == "trailing_stop_diagnostics"
     assert manifest["lookback_bars"] == 2
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert (diagnostic_dir / "time_summary.parquet").exists()
     assert (diagnostic_dir / "bucket_summary.parquet").exists()
 

@@ -243,6 +243,8 @@ def write_trailing_walk_forward_artifacts(
     step_days: int,
     min_trades: int,
     atr_multipliers: tuple[float, ...] | None = None,
+    pyramid_add_step_atr: float | None = None,
+    pyramid_max_adds: int = 0,
 ) -> Path:
     output_dir = paths.trailing_walk_forward_dir(walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -257,6 +259,8 @@ def write_trailing_walk_forward_artifacts(
         "base_config_hash": base_config.config_hash(),
         "atr_multiplier": atr_multiplier,
         "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
+        "pyramid_add_step_atr": pyramid_add_step_atr,
+        "pyramid_max_adds": pyramid_max_adds,
         "train_days": train_days,
         "test_days": test_days,
         "step_days": step_days,

@@ -476,6 +476,8 @@ def write_trailing_regime_walk_forward_artifacts(
     combo_min_component_outperformance_splits: int = 0,
     combo_min_single_outperformance_splits: int = 0,
     atr_multipliers: tuple[float, ...] | None = None,
+    pyramid_add_step_atr: float | None = None,
+    pyramid_max_adds: int = 0,
 ) -> Path:
     output_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -491,6 +493,8 @@ def write_trailing_regime_walk_forward_artifacts(
         "config_hash": config.config_hash(),
         "atr_multiplier": atr_multiplier,
         "atr_multipliers": list(atr_multipliers or (atr_multiplier,)),
+        "pyramid_add_step_atr": pyramid_add_step_atr,
+        "pyramid_max_adds": pyramid_max_adds,
         "lookback_bars": lookback_bars,
         "train_days": train_days,
         "test_days": test_days,

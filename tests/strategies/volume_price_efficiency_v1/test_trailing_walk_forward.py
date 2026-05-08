@@ -129,6 +129,8 @@ def test_write_trailing_walk_forward_artifacts(tmp_path):
         symbol_count=3,
         data_split={"holdout_days": 180},
         atr_multiplier=2.0,
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
         train_days=720,
         test_days=90,
         step_days=90,
@@ -140,6 +142,8 @@ def test_write_trailing_walk_forward_artifacts(tmp_path):
     assert manifest["run_type"] == "trailing_stop_research_walk_forward"
     assert manifest["fold_count"] == 1
     assert manifest["data_scope"] == "research_only"
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert set(manifest["outputs"]) == {
         "fold_summary",
         "fold_summary_csv",

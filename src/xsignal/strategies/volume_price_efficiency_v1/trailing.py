@@ -23,6 +23,13 @@ class TrailingStopResult:
 
 
 @dataclass
+class _PyramidLot:
+    entry_index: int
+    entry_price: float
+    atr_at_entry: float | None
+
+
+@dataclass
 class _OpenPosition:
     signal_index: int
     entry_index: int
@@ -30,6 +37,9 @@ class _OpenPosition:
     atr_at_entry: float | None
     highest_high: float
     stop_price: float
+    lots: list[_PyramidLot]
+    add_count: int = 0
+    next_add_trigger: float | None = None
     ignored_signal_count: int = 0
 
 
@@ -75,16 +85,23 @@ def _trade_row(
 ) -> dict[str, Any]:
     signal_index = position.signal_index
     entry_index = position.entry_index
-    gross_return = float(exit_price / position.entry_price - 1.0)
-    net_return = gross_return - config.round_trip_cost
+    gross_returns = [float(exit_price / lot.entry_price - 1.0) for lot in position.lots]
+    net_returns = [gross_return - config.round_trip_cost for gross_return in gross_returns]
+    gross_return = float(sum(gross_returns))
+    net_return = float(sum(net_returns))
+    lot_count = len(position.lots)
+    lot_entry_prices = [float(lot.entry_price) for lot in position.lots]
+    average_entry_price = float(sum(lot_entry_prices) / lot_count)
     signal_time = arrays.open_times[signal_index]
     return {
         "symbol": arrays.symbols[s_index],
         "signal_open_time": _json_time(signal_time),
         "decision_time": _json_time(signal_time + _timeframe_delta(arrays)),
         "entry_open_time": _json_time(arrays.open_times[entry_index]),
+        "last_entry_open_time": _json_time(arrays.open_times[position.lots[-1].entry_index]),
         "exit_time": _json_time(arrays.open_times[exit_index]),
         "entry_price": float(position.entry_price),
+        "average_entry_price": average_entry_price,
         "exit_price": float(exit_price),
         "stop_price_at_exit": float(stop_price_at_exit),
         "atr_at_entry": position.atr_at_entry,
@@ -92,6 +109,11 @@ def _trade_row(
         "highest_high": float(position.highest_high),
         "realized_return": gross_return,
         "net_realized_return": net_return,
+        "lot_count": lot_count,
+        "add_count": int(position.add_count),
+        "average_lot_net_realized_return": float(sum(net_returns) / lot_count),
+        "best_lot_net_realized_return": float(max(net_returns)),
+        "worst_lot_net_realized_return": float(min(net_returns)),
         "holding_bars": int(exit_index - entry_index + 1),
         "ignored_signal_count": int(position.ignored_signal_count),
         "move_unit": _as_float_or_none(features.move_unit[signal_index, s_index]),
@@ -113,11 +135,17 @@ def simulate_trailing_stop(
     config: VolumePriceEfficiencyConfig,
     *,
     atr_multiplier: float = 2.0,
+    pyramid_add_step_atr: float | None = None,
+    pyramid_max_adds: int = 0,
 ) -> TrailingStopResult:
     if arrays.open.shape != features.signal.shape or features.signal.shape != features.atr.shape:
         raise ValueError("array and feature shapes do not match")
     if atr_multiplier <= 0.0:
         raise ValueError("atr_multiplier must be positive")
+    if pyramid_max_adds < 0:
+        raise ValueError("pyramid_max_adds must be non-negative")
+    if pyramid_max_adds > 0 and (pyramid_add_step_atr is None or pyramid_add_step_atr <= 0.0):
+        raise ValueError("pyramid_add_step_atr must be positive when pyramid_max_adds is enabled")
 
     t_count, s_count = arrays.open.shape
     positions = np.zeros((t_count, s_count), dtype=bool)
@@ -128,6 +156,7 @@ def simulate_trailing_stop(
     for s_index in range(s_count):
         open_position: _OpenPosition | None = None
         scheduled_signal_index: int | None = None
+        scheduled_add = False
 
         for t_index in range(t_count):
             opened_this_bar = False
@@ -152,6 +181,21 @@ def simulate_trailing_stop(
                             atr_at_entry=entry_atr,
                             highest_high=entry_price,
                             stop_price=initial_stop,
+                            lots=[
+                                _PyramidLot(
+                                    entry_index=t_index,
+                                    entry_price=entry_price,
+                                    atr_at_entry=entry_atr,
+                                )
+                            ],
+                            next_add_trigger=(
+                                entry_price
+                                + pyramid_add_step_atr * features.atr[scheduled_signal_index, s_index]
+                                if pyramid_max_adds > 0
+                                and pyramid_add_step_atr is not None
+                                and np.isfinite(features.atr[scheduled_signal_index, s_index])
+                                else None
+                            ),
                         )
                         opened_this_bar = True
                 if t_index >= scheduled_signal_index + 1:
@@ -160,6 +204,36 @@ def simulate_trailing_stop(
             if open_position is not None:
                 positions[t_index, s_index] = True
                 stop_prices[t_index, s_index] = open_position.stop_price
+                if scheduled_add:
+                    add_confirmed = False
+                    if _valid_entry_open(arrays, t_index, s_index):
+                        entry_price = float(arrays.open[t_index, s_index])
+                        add_confirmed = (
+                            open_position.next_add_trigger is not None
+                            and entry_price >= open_position.next_add_trigger
+                        )
+                    if add_confirmed:
+                        open_position.lots.append(
+                            _PyramidLot(
+                                entry_index=t_index,
+                                entry_price=entry_price,
+                                atr_at_entry=_as_float_or_none(features.atr[t_index, s_index]),
+                            )
+                        )
+                        open_position.add_count += 1
+                        if (
+                            open_position.add_count < pyramid_max_adds
+                            and pyramid_add_step_atr is not None
+                            and np.isfinite(features.atr[t_index, s_index])
+                        ):
+                            open_position.next_add_trigger = (
+                                entry_price + pyramid_add_step_atr * features.atr[t_index, s_index]
+                            )
+                        else:
+                            open_position.next_add_trigger = None
+                    else:
+                        open_position.next_add_trigger = None
+                    scheduled_add = False
                 if features.signal[t_index, s_index] and t_index != open_position.signal_index:
                     open_position.ignored_signal_count += 1
                 if (
@@ -187,6 +261,15 @@ def simulate_trailing_stop(
                 bar_high = arrays.high[t_index, s_index]
                 if arrays.quality[t_index, s_index] and np.isfinite(bar_high):
                     open_position.highest_high = max(open_position.highest_high, float(bar_high))
+                if (
+                    open_position.next_add_trigger is not None
+                    and open_position.add_count < pyramid_max_adds
+                    and arrays.quality[t_index, s_index]
+                    and np.isfinite(bar_high)
+                    and bar_high >= open_position.next_add_trigger
+                    and t_index + 1 < t_count
+                ):
+                    scheduled_add = True
                 next_stop = _stop_from(
                     open_position.highest_high,
                     features.atr[t_index, s_index],

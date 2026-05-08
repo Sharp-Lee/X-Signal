@@ -299,6 +299,8 @@ def test_write_trailing_scan_artifacts_creates_manifest_summary_csv_and_top_conf
         symbol_count=2,
         data_split={"holdout_days": 180},
         atr_multiplier=2.0,
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
         min_trades=10,
     )
 
@@ -309,6 +311,8 @@ def test_write_trailing_scan_artifacts_creates_manifest_summary_csv_and_top_conf
     assert manifest["run_type"] == "trailing_stop_research_scan"
     assert manifest["data_split"]["holdout_days"] == 180
     assert manifest["atr_multiplier"] == 2.0
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert manifest["min_trades"] == 10
     assert set(manifest["outputs"]) == {"summary", "summary_csv", "top_configs"}
     assert summary["combination_count"] == 1

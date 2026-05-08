@@ -231,6 +231,8 @@ def write_trailing_diagnostic_artifacts(
     data_split: dict[str, Any],
     atr_multiplier: float,
     lookback_bars: int,
+    pyramid_add_step_atr: float | None = None,
+    pyramid_max_adds: int = 0,
 ) -> Path:
     diagnostic_dir = paths.trailing_diagnostic_dir(diagnostic_id)
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
@@ -243,6 +245,8 @@ def write_trailing_diagnostic_artifacts(
         "config": config.model_dump(mode="json"),
         "config_hash": config.config_hash(),
         "atr_multiplier": atr_multiplier,
+        "pyramid_add_step_atr": pyramid_add_step_atr,
+        "pyramid_max_adds": pyramid_max_adds,
         "lookback_bars": lookback_bars,
         "canonical_manifests": canonical_manifests,
         "runtime_seconds": runtime_seconds,

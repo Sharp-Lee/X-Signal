@@ -375,6 +375,8 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
         symbol_count=5,
         data_split={"holdout_days": 180},
         atr_multiplier=2.0,
+        pyramid_add_step_atr=1.0,
+        pyramid_max_adds=1,
         lookback_bars=30,
         train_days=720,
         test_days=90,
@@ -393,6 +395,8 @@ def test_write_trailing_regime_walk_forward_artifacts(tmp_path):
     assert manifest["data_scope"] == "research_only"
     assert manifest["threshold_scope"] == "per_fold_train_signal_distribution"
     assert manifest["selection_method"] == "train_stability"
+    assert manifest["pyramid_add_step_atr"] == 1.0
+    assert manifest["pyramid_max_adds"] == 1
     assert manifest["stability_splits"] == 3
     assert manifest["stability_min_trades"] == 10
     assert manifest["stability_min_positive_splits"] == 2
