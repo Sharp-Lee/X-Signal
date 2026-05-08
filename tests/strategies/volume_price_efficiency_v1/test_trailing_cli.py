@@ -1614,3 +1614,144 @@ def test_cli_trail_regime_diagnose_writes_combo_diagnostics(tmp_path, monkeypatc
     assert manifest["combo_selection_regime_walk_forward_id"] == "allow-combo"
     assert candidate_rows[0]["score_lift_vs_best_component"] == 0.01
     assert comparison_rows[0]["validation_score_delta"] == -0.03
+
+
+def test_cli_trail_regime_gate_sweep_writes_artifact_only_summary(tmp_path, monkeypatch):
+    base = tmp_path / "strategies" / "volume_price_efficiency_v1" / "trailing_regime_walk_forwards"
+    baseline_dir = base / "default-single"
+    gated_dir = base / "gated"
+    baseline_dir.mkdir(parents=True)
+    gated_dir.mkdir(parents=True)
+    (baseline_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "regime_walk_forward_id": "default-single",
+                "allow_combo_selection": False,
+                "max_rule_size": 1,
+            }
+        )
+    )
+    (gated_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "regime_walk_forward_id": "gated",
+                "allow_combo_selection": True,
+                "max_rule_size": 2,
+                "combo_min_score_lift_vs_best_single": 0.005,
+            }
+        )
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50",
+                    "component_count": 1,
+                    "validation_score": 0.01,
+                    "validation_total_return": 0.02,
+                    "validation_trade_count": 12,
+                },
+                {
+                    "fold_index": 1,
+                    "rule_id": "volume_unit_gte_p50",
+                    "component_count": 1,
+                    "validation_score": 0.03,
+                    "validation_total_return": 0.04,
+                    "validation_trade_count": 10,
+                },
+            ]
+        ),
+        baseline_dir / "fold_summary.parquet",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50",
+                    "component_count": 1,
+                }
+            ]
+        ),
+        baseline_dir / "selection_summary.parquet",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50__and__volume_unit_gte_p50",
+                    "component_count": 2,
+                    "component_rule_ids": json.dumps(
+                        ["move_unit_gte_p50", "volume_unit_gte_p50"]
+                    ),
+                    "validation_score": -0.02,
+                    "validation_total_return": -0.01,
+                    "validation_trade_count": 8,
+                },
+                {
+                    "fold_index": 1,
+                    "rule_id": "volume_unit_gte_p50",
+                    "component_count": 1,
+                    "validation_score": 0.05,
+                    "validation_total_return": 0.06,
+                    "validation_trade_count": 11,
+                },
+            ]
+        ),
+        gated_dir / "fold_summary.parquet",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50__and__volume_unit_gte_p50",
+                    "component_count": 2,
+                    "combo_gate_passed": True,
+                },
+                {
+                    "fold_index": 0,
+                    "rule_id": "move_unit_gte_p50__and__close_position_gte_p50",
+                    "component_count": 2,
+                    "combo_gate_passed": False,
+                },
+            ]
+        ),
+        gated_dir / "selection_summary.parquet",
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-gate-sweep",
+            "--root",
+            str(tmp_path),
+            "--diagnostic-id",
+            "sweep",
+            "--baseline-regime-walk-forward-id",
+            "default-single",
+            "--experiment-regime-walk-forward-id",
+            "gated",
+        ]
+    )
+
+    output_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_regime_diagnostics"
+        / "sweep"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    summary_rows = pq.read_table(output_dir / "gate_sweep_summary.parquet").to_pylist()
+    comparison_rows = pq.read_table(output_dir / "gate_sweep_fold_comparison.parquet").to_pylist()
+    assert exit_code == 0
+    assert manifest["run_type"] == "trailing_stop_research_regime_gate_sweep"
+    assert manifest["baseline_regime_walk_forward_id"] == "default-single"
+    assert manifest["experiment_regime_walk_forward_ids"] == ["gated"]
+    assert summary_rows[1]["regime_walk_forward_id"] == "gated"
+    assert summary_rows[1]["selected_combo_fold_count"] == 1
+    assert summary_rows[1]["combo_gate_failed_count"] == 1
+    assert comparison_rows[0]["validation_total_return_delta"] == -0.03
