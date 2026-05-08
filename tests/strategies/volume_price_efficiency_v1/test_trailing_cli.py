@@ -189,6 +189,156 @@ def test_cli_trail_requires_fixed_two_atr_multiplier(tmp_path, monkeypatch):
         raise AssertionError("trail should reject non-2.0 ATR multiplier")
 
 
+def test_cli_trail_regime_holdout_trains_rule_on_research_then_runs_holdout(
+    tmp_path,
+    monkeypatch,
+):
+    all_arrays = _arrays(8)
+    research_arrays = _arrays(4)
+    holdout_arrays = _arrays(4)
+    captured = {"split": [], "features": [], "simulate_signal_indices": []}
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.load_offline_ohlcv_table",
+        lambda *_args, **_kwargs: (
+            CanonicalOhlcvTable("4h", "raw", tmp_path / "manifest.json", tmp_path / "bars.parquet", None),
+            (tmp_path / "manifest.json",),
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.prepare_ohlcv_arrays",
+        lambda _table: all_arrays,
+    )
+
+    def fake_split(arrays, *, holdout_days):
+        captured["split"].append((arrays, holdout_days))
+        return (
+            research_arrays,
+            holdout_arrays,
+            {
+                "holdout_days": holdout_days,
+                "research_start": "2026-01-01T00:00:00Z",
+                "research_end": "2026-01-01T12:00:00Z",
+                "holdout_start": "2026-01-01T16:00:00Z",
+                "holdout_end": "2026-01-02T04:00:00Z",
+            },
+        )
+
+    signal = np.ones((8, 1), dtype=bool)
+    move = np.array([[0.0], [1.0], [2.0], [3.0], [0.0], [1.0], [2.0], [3.0]])
+
+    def fake_features(feature_arrays, config):
+        captured["features"].append((feature_arrays, config))
+        row_count = feature_arrays.open.shape[0]
+        features = _features(row_count)
+        features = FeatureArrays(
+            true_range=features.true_range,
+            atr=features.atr,
+            move_unit=move[:row_count].copy(),
+            volume_baseline=features.volume_baseline,
+            volume_unit=features.volume_unit,
+            efficiency=features.efficiency,
+            efficiency_threshold=features.efficiency_threshold,
+            close_position=features.close_position,
+            body_ratio=features.body_ratio,
+            signal=signal[:row_count].copy(),
+        )
+        return features
+
+    def fake_simulate(sim_arrays, features, config, *, atr_multiplier):
+        signal_indices = tuple(int(index) for index in np.flatnonzero(features.signal[:, 0]))
+        captured["simulate_signal_indices"].append(signal_indices)
+        from xsignal.strategies.volume_price_efficiency_v1.trailing import TrailingStopResult
+
+        final_equity = 1.2 if signal_indices == (2, 3) else 1.0 + len(signal_indices) / 100.0
+        equity = np.linspace(1.0, final_equity, sim_arrays.open.shape[0], dtype=np.float64)
+        return TrailingStopResult(
+            trades=[
+                {
+                    "symbol": "BTCUSDT",
+                    "signal_open_time": sim_arrays.open_times[index].isoformat(),
+                    "realized_return": 0.04,
+                    "net_realized_return": 0.038,
+                    "holding_bars": 2,
+                    "ignored_signal_count": 0,
+                }
+                for index in signal_indices
+            ],
+            equity=equity,
+            period_returns=equity[1:] / equity[:-1] - 1.0,
+            positions=np.zeros(features.signal.shape, dtype=bool),
+            stop_prices=np.full(features.signal.shape, np.nan),
+        )
+
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.split_research_and_holdout",
+        fake_split,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.holdout_mask_for_open_times",
+        lambda _open_times, *, holdout_days: np.array(
+            [False, False, False, False, True, True, True, True],
+            dtype=bool,
+        ),
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.compute_features",
+        fake_features,
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.build_signal_mask",
+        lambda arrays, _features, _config: signal[: arrays.open.shape[0]],
+    )
+    monkeypatch.setattr(
+        "xsignal.strategies.volume_price_efficiency_v1.cli.simulate_trailing_stop",
+        fake_simulate,
+    )
+    monkeypatch.setattr("xsignal.strategies.volume_price_efficiency_v1.cli._git_commit", lambda: "abc123")
+
+    exit_code = main(
+        [
+            "trail-regime-holdout",
+            "--root",
+            str(tmp_path),
+            "--run-id",
+            "regime-holdout",
+            "--offline",
+            "--holdout-days",
+            "7",
+            "--atr-multiplier",
+            "2.0",
+            "--feature-name",
+            "move_unit",
+            "--quantile",
+            "0.5",
+            "--min-trades",
+            "1",
+        ]
+    )
+
+    run_dir = (
+        tmp_path
+        / "strategies"
+        / "volume_price_efficiency_v1"
+        / "trailing_runs"
+        / "regime-holdout"
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    selected_filter = json.loads((run_dir / "selected_filter.json").read_text())
+    assert exit_code == 0
+    assert captured["split"] == [(all_arrays, 7)]
+    assert captured["features"][0][0] is research_arrays
+    assert captured["features"][1][0] is all_arrays
+    assert captured["simulate_signal_indices"][-1] == (2, 3)
+    assert manifest["run_type"] == "trailing_stop_regime_holdout"
+    assert manifest["selection_scope"] == "research_only"
+    assert manifest["threshold_scope"] == "full_research_signal_distribution"
+    assert manifest["selected_rule_id"] == "move_unit_gte_p50"
+    assert selected_filter["rule_id"] == "move_unit_gte_p50"
+    assert selected_filter["threshold"] == 1.5
+    assert pq.read_table(run_dir / "selection_summary.parquet").num_rows == 2
+
+
 def test_cli_trail_scan_runs_on_research_window_and_writes_artifacts(tmp_path, monkeypatch):
     arrays = _arrays(8)
     research_arrays = _arrays(5)
