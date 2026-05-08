@@ -77,6 +77,27 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _rule_component_payload(rule: RegimeFilterRule | None) -> dict[str, Any]:
+    if rule is None:
+        return {
+            "component_count": 0,
+            "component_rule_ids": "[]",
+            "component_feature_names": "[]",
+            "component_directions": "[]",
+            "component_quantiles": "[]",
+            "component_thresholds": "[]",
+        }
+    parts = rule.parts
+    return {
+        "component_count": len(parts),
+        "component_rule_ids": json.dumps([part.rule_id for part in parts]),
+        "component_feature_names": json.dumps([part.feature_name for part in parts]),
+        "component_directions": json.dumps([part.direction for part in parts]),
+        "component_quantiles": json.dumps([part.quantile for part in parts]),
+        "component_thresholds": json.dumps([_rounded(part.threshold) for part in parts]),
+    }
+
+
 def build_regime_stability_summary(
     segment_rows: list[dict[str, Any]],
     *,
@@ -208,6 +229,7 @@ def build_regime_walk_forward_fold_row(
         "direction": selected_rule.direction if selected_rule is not None else None,
         "quantile": selected_rule.quantile if selected_rule is not None else None,
         "threshold": _rounded(selected_rule.threshold if selected_rule is not None else None),
+        **_rule_component_payload(selected_rule),
         "threshold_source": "train_fold_signal_distribution",
         "selection_method": train.get("selection_method", "train_total_score"),
         "train_score": _rounded(train.get("score")),
@@ -277,6 +299,9 @@ def write_trailing_regime_walk_forward_artifacts(
     stability_splits: int = 1,
     stability_min_trades: int = 0,
     stability_min_positive_splits: int = 0,
+    max_rule_size: int = 1,
+    combo_seed_top_k: int = 0,
+    allow_combo_selection: bool = False,
 ) -> Path:
     output_dir = paths.trailing_regime_walk_forward_dir(regime_walk_forward_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +325,9 @@ def write_trailing_regime_walk_forward_artifacts(
         "stability_splits": stability_splits,
         "stability_min_trades": stability_min_trades,
         "stability_min_positive_splits": stability_min_positive_splits,
+        "max_rule_size": max_rule_size,
+        "combo_seed_top_k": combo_seed_top_k,
+        "allow_combo_selection": allow_combo_selection,
         "quantiles": list(quantiles),
         "feature_names": list(feature_names),
         "canonical_manifests": canonical_manifests,
