@@ -143,6 +143,52 @@ class BinanceUsdFuturesTestnetBroker:
             params={"symbol": symbol, "origClientOrderId": client_order_id},
         )
 
+    def get_position_risk(self, *, symbol: str) -> list[dict[str, Any]]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v3/positionRisk",
+            signed=True,
+            params={"symbol": symbol},
+        )
+
+    def get_open_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v1/openOrder",
+            signed=True,
+            params={"symbol": symbol, "origClientOrderId": client_order_id},
+        )
+
+    def get_open_orders(self, *, symbol: str) -> list[dict[str, Any]]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v1/openOrders",
+            signed=True,
+            params={"symbol": symbol},
+        )
+
+    def market_sell_reduce_only(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        return self.rest_client.request(
+            "POST",
+            "/fapi/v1/order",
+            signed=True,
+            params={
+                "symbol": symbol,
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": _format_decimal(quantity),
+                "reduceOnly": "true",
+                "newClientOrderId": client_order_id,
+                "positionSide": "BOTH",
+            },
+        )
+
     def test_order(
         self,
         *,

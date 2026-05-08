@@ -216,3 +216,61 @@ def test_broker_cancels_and_validates_test_order():
             },
         ),
     ]
+
+
+def test_broker_queries_position_risk_and_open_orders():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.get_position_risk(symbol="BTCUSDT")
+    broker.get_open_order(symbol="BTCUSDT", client_order_id="XV1TSBTC123")
+    broker.get_open_orders(symbol="BTCUSDT")
+
+    assert rest_client.calls == [
+        (
+            "GET",
+            "/fapi/v3/positionRisk",
+            True,
+            {"symbol": "BTCUSDT"},
+        ),
+        (
+            "GET",
+            "/fapi/v1/openOrder",
+            True,
+            {"symbol": "BTCUSDT", "origClientOrderId": "XV1TSBTC123"},
+        ),
+        (
+            "GET",
+            "/fapi/v1/openOrders",
+            True,
+            {"symbol": "BTCUSDT"},
+        ),
+    ]
+
+
+def test_broker_market_sell_reduce_only_closes_existing_position():
+    rest_client = FakeRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    broker.market_sell_reduce_only(
+        symbol="BTCUSDT",
+        quantity=0.001,
+        client_order_id="XV1TCBTC123",
+    )
+
+    assert rest_client.calls == [
+        (
+            "POST",
+            "/fapi/v1/order",
+            True,
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "MARKET",
+                "quantity": "0.001",
+                "reduceOnly": "true",
+                "newClientOrderId": "XV1TCBTC123",
+                "positionSide": "BOTH",
+            },
+        )
+    ]
