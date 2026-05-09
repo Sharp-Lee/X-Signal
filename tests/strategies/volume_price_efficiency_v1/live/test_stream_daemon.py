@@ -611,6 +611,44 @@ def test_closed_bar_poll_allows_fresh_entries_and_paces_fetches():
     assert service.closed_calls == [(aggregate, True, True, False)]
 
 
+def test_stream_daemon_starts_full_universe_stream_without_closed_poll_task(monkeypatch):
+    created = []
+
+    async def fake_full_universe(**kwargs):
+        created.append(("full_universe_ws", tuple(kwargs["symbols"])))
+        await kwargs["stop_event"].wait()
+
+    async def fake_closed_poll(**kwargs):
+        created.append(("closed_poll",))
+
+    monkeypatch.setattr(stream_daemon_module, "_full_universe_stream_manager", fake_full_universe)
+    monkeypatch.setattr(stream_daemon_module, "_poll_closed_1m_loop", fake_closed_poll)
+
+    async def run() -> list[asyncio.Task]:
+        stop_event = asyncio.Event()
+        tasks = stream_daemon_module._build_market_data_tasks(
+            store=object(),
+            rest_client=object(),
+            aggregator=object(),
+            service=object(),
+            entry_gate=object(),
+            symbols=["BTCUSDT"],
+            stop_event=stop_event,
+            counter=stream_daemon_module._EventCounter(limit=1),
+            config=StreamDaemonConfig(mode="testnet", db_path="live.sqlite"),
+            recovery_lock=asyncio.Lock(),
+        )
+        await asyncio.sleep(0)
+        stop_event.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return tasks
+
+    tasks = asyncio.run(run())
+
+    assert len(tasks) == 1
+    assert created == [("full_universe_ws", ("BTCUSDT",))]
+
+
 def test_consume_stream_url_can_skip_initial_recovery_after_startup(monkeypatch):
     events = []
 

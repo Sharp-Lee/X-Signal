@@ -308,32 +308,18 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         action=initial_recovery,
     )
     _print_event("startup_recovery_finished", mode=config.mode, symbols=len(symbols))
-    tasks = [
-        asyncio.create_task(
-            _poll_closed_1m_loop(
-                store=store,
-                rest_client=broker.rest_client,
-                aggregator=aggregator,
-                service=service,
-                entry_gate=entry_gate,
-                symbols=symbols,
-                intervals=config.intervals,
-                stop_event=stop_event,
-                counter=counter,
-                config=config,
-                recovery_lock=recovery_lock,
-            )
-        ),
-        asyncio.create_task(
-            _active_position_stream_manager(
-                service=service,
-                entry_gate=entry_gate,
-                stop_event=stop_event,
-                counter=counter,
-                config=config,
-            )
-        ),
-    ]
+    tasks = _build_market_data_tasks(
+        store=store,
+        rest_client=broker.rest_client,
+        aggregator=aggregator,
+        service=service,
+        entry_gate=entry_gate,
+        symbols=symbols,
+        stop_event=stop_event,
+        counter=counter,
+        config=config,
+        recovery_lock=recovery_lock,
+    )
     if config.reconcile_interval_seconds > 0:
         tasks.append(
             asyncio.create_task(
@@ -351,6 +337,80 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         )
     await asyncio.gather(*tasks)
     return 0
+
+
+def _build_market_data_tasks(
+    *,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    symbols: list[str],
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+    recovery_lock: asyncio.Lock,
+) -> list[asyncio.Task]:
+    return [
+        asyncio.create_task(
+            _full_universe_stream_manager(
+                store=store,
+                rest_client=rest_client,
+                aggregator=aggregator,
+                service=service,
+                entry_gate=entry_gate,
+                symbols=symbols,
+                stop_event=stop_event,
+                counter=counter,
+                config=config,
+                recovery_lock=recovery_lock,
+            )
+        )
+    ]
+
+
+async def _full_universe_stream_manager(
+    *,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    symbols: list[str],
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+    recovery_lock: asyncio.Lock,
+) -> None:
+    specs = build_daemon_stream_specs(
+        mode=config.mode,
+        symbols=symbols,
+        max_streams=config.max_streams,
+    )
+    _print_event(
+        "full_universe_streams_started",
+        symbols=len(symbols),
+        streams=len(specs),
+    )
+    await asyncio.gather(
+        *[
+            _consume_stream_url(
+                spec=spec,
+                store=store,
+                rest_client=rest_client,
+                aggregator=aggregator,
+                service=service,
+                entry_gate=entry_gate,
+                stop_event=stop_event,
+                counter=counter,
+                config=config,
+                recovery_lock=recovery_lock,
+                recover_before_connect=False,
+            )
+            for spec in specs
+        ]
+    )
 
 
 async def _poll_closed_1m_loop(
