@@ -88,6 +88,17 @@ def _open_stop(client_id: str = "XV1TSBTCSTOP") -> dict:
     }
 
 
+def _testnet_open_algo_stop(client_id: str = "XV1TSBTCSTOP") -> dict:
+    return {
+        "symbol": "BTCUSDT",
+        "clientAlgoId": client_id,
+        "orderType": "STOP_MARKET",
+        "side": "SELL",
+        "closePosition": True,
+        "algoStatus": "NEW",
+    }
+
+
 def _store_with_position(tmp_path, state: PositionState = PositionState.OPEN) -> tuple[LiveStore, str]:
     store = LiveStore.open(tmp_path / "live.sqlite")
     store.initialize()
@@ -145,6 +156,29 @@ def test_reconcile_marks_local_open_with_exchange_position_and_stop_as_protected
     assert store.get_order_intent_by_client_order_id("XV1TSBTCSTOP").status == (
         OrderIntentStatus.EXCHANGE_CONFIRMED
     )
+
+
+def test_reconcile_accepts_testnet_open_algo_order_type_field(tmp_path):
+    store, position_id = _store_with_position(tmp_path, PositionState.OPEN)
+    _record_intent(
+        store,
+        position_id=position_id,
+        intent_type=OrderIntentType.STOP_PLACE,
+        client_id="XV1TSBTCSTOP",
+    )
+    broker = FakeReconcileBroker(open_orders=[_testnet_open_algo_stop()])
+
+    summary = run_reconciliation_pass(
+        store=store,
+        broker=broker,
+        symbols=["BTCUSDT"],
+        environment="testnet",
+        allow_repair=False,
+        now=NOW,
+    )
+
+    assert summary.findings[0].status == ReconcileStatus.PROTECTED
+    assert store.get_position_state(position_id) == PositionState.OPEN
 
 
 def test_reconcile_locks_unprotected_local_open_position_in_read_only_mode(tmp_path):

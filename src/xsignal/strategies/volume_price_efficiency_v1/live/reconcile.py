@@ -406,10 +406,11 @@ def _position_amount(position: dict) -> Decimal:
 def _is_open_strategy_stop(order: dict) -> bool:
     client_id = str(order.get("clientAlgoId") or order.get("clientOrderId") or "")
     status = str(order.get("algoStatus") or order.get("status") or "")
+    order_type = str(order.get("type") or order.get("orderType") or "")
     return (
         client_id.startswith("XV1")
         and status in {"NEW", "PARTIALLY_FILLED"}
-        and str(order.get("type")) == "STOP_MARKET"
+        and order_type == "STOP_MARKET"
         and str(order.get("side")) == "SELL"
         and _truthy(order.get("closePosition"))
     )
