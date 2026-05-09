@@ -232,6 +232,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         max_streams=config.max_streams,
     )
     stop_event = asyncio.Event()
+    recovery_lock = asyncio.Lock()
     counter = _EventCounter(limit=config.stop_after_events)
     tasks = [
         asyncio.create_task(
@@ -245,6 +246,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
                 stop_event,
                 counter,
                 config,
+                recovery_lock,
             )
         )
         for spec in specs
@@ -277,12 +279,15 @@ async def _consume_stream_url(
     stop_event: asyncio.Event,
     counter: "_EventCounter",
     config: StreamDaemonConfig,
+    recovery_lock: asyncio.Lock,
 ) -> None:
     import websockets
 
     while not stop_event.is_set():
         try:
-            _recover_symbols_1m_gap(
+            await _run_locked_recovery(
+                recovery_lock=recovery_lock,
+                recovery_runner=_recover_symbols_1m_gap,
                 store=store,
                 rest_client=rest_client,
                 aggregator=aggregator,
@@ -321,6 +326,11 @@ async def _consume_stream_url(
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
+
+
+async def _run_locked_recovery(*, recovery_lock: asyncio.Lock, recovery_runner, **kwargs) -> None:
+    async with recovery_lock:
+        await asyncio.to_thread(recovery_runner, **kwargs)
 
 
 def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService) -> bool:

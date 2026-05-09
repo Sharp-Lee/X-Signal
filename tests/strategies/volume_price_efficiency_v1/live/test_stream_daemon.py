@@ -1,4 +1,6 @@
+import asyncio
 from datetime import datetime, timezone
+import time
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeEventResult
@@ -7,6 +9,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
+    _run_locked_recovery,
     _should_parse_stream_payload,
     _stream_error_backoff_seconds,
     build_daemon_stream_urls,
@@ -237,6 +240,44 @@ def test_stream_error_backoff_uses_longer_delay_for_rate_limits():
         == 60.0
     )
     assert _stream_error_backoff_seconds(RuntimeError("closed"), config) == 5.0
+
+
+def test_locked_recovery_runs_in_thread_and_serializes_calls():
+    events = []
+
+    def recovery_runner(*, name: str) -> None:
+        events.append(f"start-{name}")
+        time.sleep(0.05)
+        events.append(f"end-{name}")
+
+    async def tick() -> None:
+        await asyncio.sleep(0.01)
+        events.append("tick")
+
+    async def run() -> None:
+        recovery_lock = asyncio.Lock()
+        first = asyncio.create_task(
+            _run_locked_recovery(
+                recovery_lock=recovery_lock,
+                recovery_runner=recovery_runner,
+                name="first",
+            )
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            _run_locked_recovery(
+                recovery_lock=recovery_lock,
+                recovery_runner=recovery_runner,
+                name="second",
+            )
+        )
+        ticker = asyncio.create_task(tick())
+        await asyncio.gather(first, second, ticker)
+
+    asyncio.run(run())
+
+    assert events.index("tick") < events.index("end-first")
+    assert events.index("start-second") > events.index("end-first")
 
 
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
