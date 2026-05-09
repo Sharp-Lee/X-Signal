@@ -97,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--recovery-sleep-ms", type=int, default=500)
     stream_daemon.add_argument("--closed-poll-sleep-ms", type=int, default=25)
     stream_daemon.add_argument("--closed-poll-grace-seconds", type=float, default=2.0)
+    stream_daemon.add_argument("--closed-poll-fetch-limit", type=int, default=99)
     stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
     stream_daemon.add_argument("--env-file", type=Path)
     stream_daemon.add_argument("--stop-after-events", type=int)
@@ -443,6 +444,7 @@ def run_stream_daemon_command(
     recovery_sleep_ms: int = 500,
     closed_poll_sleep_ms: int = 25,
     closed_poll_grace_seconds: float = 2.0,
+    closed_poll_fetch_limit: int = 99,
     reconcile_interval_seconds: float = 300.0,
     stop_after_events: int | None = None,
     max_streams: int | None = None,
@@ -475,6 +477,7 @@ def run_stream_daemon_command(
         recovery_sleep_ms=recovery_sleep_ms,
         closed_poll_sleep_ms=closed_poll_sleep_ms,
         closed_poll_grace_seconds=closed_poll_grace_seconds,
+        closed_poll_fetch_limit=closed_poll_fetch_limit,
         reconcile_interval_seconds=reconcile_interval_seconds,
         stop_after_events=stop_after_events,
     )
@@ -534,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
             recovery_sleep_ms=args.recovery_sleep_ms,
             closed_poll_sleep_ms=args.closed_poll_sleep_ms,
             closed_poll_grace_seconds=args.closed_poll_grace_seconds,
+            closed_poll_fetch_limit=args.closed_poll_fetch_limit,
             reconcile_interval_seconds=args.reconcile_interval_seconds,
             stop_after_events=args.stop_after_events,
             max_streams=args.max_streams,

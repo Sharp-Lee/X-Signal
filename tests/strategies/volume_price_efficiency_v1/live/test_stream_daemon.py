@@ -221,6 +221,7 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     assert config.max_streams == 25
     assert config.seed_sleep_ms == 20
     assert config.recovery_sleep_ms == 500
+    assert config.closed_poll_fetch_limit == 99
     assert config.rate_limit_backoff_seconds == 60.0
 
 
@@ -360,6 +361,81 @@ def test_stream_error_backoff_uses_longer_delay_for_rate_limits():
     assert _stream_error_backoff_seconds(RuntimeError("closed"), config) == 5.0
 
 
+def test_stream_error_backoff_honors_binance_ban_until_timestamp(monkeypatch):
+    config = StreamDaemonConfig(
+        mode="testnet",
+        db_path="live.sqlite",
+        reconnect_backoff_seconds=5.0,
+        rate_limit_backoff_seconds=60.0,
+    )
+    monkeypatch.setattr(stream_daemon_module.time, "time", lambda: 1_778_353_000.0)
+
+    assert (
+        _stream_error_backoff_seconds(
+            BinanceApiError(
+                status=418,
+                code=-1003,
+                message="Way too many requests; IP banned until 1778353379518.",
+            ),
+            config,
+        )
+        == 380.518
+    )
+
+
+def test_startup_step_retries_rate_limit_without_crashing_systemd_loop(monkeypatch):
+    config = StreamDaemonConfig(
+        mode="testnet",
+        db_path="live.sqlite",
+        reconnect_backoff_seconds=5.0,
+        rate_limit_backoff_seconds=60.0,
+    )
+    monkeypatch.setattr(stream_daemon_module.time, "time", lambda: 1_778_353_000.0)
+    attempts = []
+    sleeps = []
+
+    class Gate:
+        def __init__(self) -> None:
+            self.errors = []
+
+        def mark_stream_error(self, error):
+            self.errors.append(error)
+
+        def snapshot(self):
+            return {"allow_entries": False, "reasons": ["rest_rate_limited"]}
+
+    async def action():
+        attempts.append("try")
+        if len(attempts) == 1:
+            raise BinanceApiError(
+                status=418,
+                code=-1003,
+                message="Way too many requests; IP banned until 1778353379518.",
+            )
+        return "ok"
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    async def run():
+        gate = Gate()
+        result = await stream_daemon_module._retry_startup_step_after_rate_limit(
+            step="reconcile",
+            config=config,
+            entry_gate=gate,
+            action=action,
+            sleep_func=sleep,
+        )
+        return result, gate
+
+    result, gate = asyncio.run(run())
+
+    assert result == "ok"
+    assert attempts == ["try", "try"]
+    assert sleeps == [380.518]
+    assert len(gate.errors) == 1
+
+
 def test_async_recovery_keeps_sqlite_work_on_event_loop_thread():
     main_thread_id = threading.get_ident()
     store = ThreadCheckingRecoveryStore(main_thread_id)
@@ -470,8 +546,10 @@ def test_async_recovery_serializes_fetches_but_keeps_event_loop_responsive():
 
 def test_closed_bar_poll_allows_fresh_entries_and_paces_fetches():
     sleeps = []
+    limits = []
 
     def fetch_range(rest_client, **kwargs):
+        limits.append(kwargs["limit"])
         return [
             {
                 "symbol": kwargs["symbol"],
@@ -519,6 +597,7 @@ def test_closed_bar_poll_allows_fresh_entries_and_paces_fetches():
             symbols=["BTCUSDT"],
             intervals=("1h",),
             poll_sleep_ms=25,
+            fetch_limit=99,
             sleep_func=record_sleep,
             fetch_range=fetch_range,
         )
@@ -526,6 +605,7 @@ def test_closed_bar_poll_allows_fresh_entries_and_paces_fetches():
     asyncio.run(run())
 
     assert sleeps == [0.025]
+    assert limits == [99]
     assert len(service.price_calls) == 1
     assert service.price_calls[0][1:] == (True, False)
     assert service.closed_calls == [(aggregate, True, True, False)]

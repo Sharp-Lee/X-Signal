@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from xsignal.strategies.volume_price_efficiency_v1.live.bar_aggregator import (
     MultiIntervalAggregator,
@@ -44,6 +47,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
 
 DEFAULT_REALTIME_INTERVALS = ("1h", "4h", "1d")
 DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 25
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class StreamDaemonConfig:
     recovery_sleep_ms: int = 500
     closed_poll_sleep_ms: int = 25
     closed_poll_grace_seconds: float = 2.0
+    closed_poll_fetch_limit: int = 99
     stop_after_events: int | None = None
 
     def __post_init__(self) -> None:
@@ -84,6 +89,8 @@ class StreamDaemonConfig:
             raise ValueError("closed_poll_sleep_ms must be non-negative")
         if self.closed_poll_grace_seconds < 0:
             raise ValueError("closed_poll_grace_seconds must be non-negative")
+        if self.closed_poll_fetch_limit <= 0:
+            raise ValueError("closed_poll_fetch_limit must be positive")
         for interval in self.intervals:
             validate_interval(interval)
 
@@ -243,13 +250,21 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         intervals=list(config.intervals),
     )
     entry_gate = EntryHealthGate()
-    summary = run_reconciliation_pass(
-        store=store,
-        broker=broker,
-        symbols=symbols,
-        environment=config.mode,
-        allow_repair=False,
-        now=datetime.now(timezone.utc),
+    async def initial_reconcile():
+        return run_reconciliation_pass(
+            store=store,
+            broker=broker,
+            symbols=symbols,
+            environment=config.mode,
+            allow_repair=False,
+            now=datetime.now(timezone.utc),
+        )
+
+    summary = await _retry_startup_step_after_rate_limit(
+        step="reconcile",
+        config=config,
+        entry_gate=entry_gate,
+        action=initial_reconcile,
     )
     entry_gate.mark_reconcile(summary)
     _print_reconcile_event(summary=summary, entry_gate=entry_gate)
@@ -272,15 +287,25 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     recovery_lock = asyncio.Lock()
     counter = _EventCounter(limit=config.stop_after_events)
     _print_event("startup_recovery_started", mode=config.mode, symbols=len(symbols))
-    await _recover_symbols_1m_gap_async(
-        recovery_lock=recovery_lock,
-        store=store,
-        rest_client=broker.rest_client,
-        aggregator=aggregator,
-        service=service,
-        symbols=symbols,
-        intervals=config.intervals,
-        recovery_sleep_ms=config.recovery_sleep_ms,
+
+    async def initial_recovery() -> None:
+        await _recover_symbols_1m_gap_async(
+            recovery_lock=recovery_lock,
+            store=store,
+            rest_client=broker.rest_client,
+            aggregator=aggregator,
+            service=service,
+            symbols=symbols,
+            intervals=config.intervals,
+            recovery_sleep_ms=config.recovery_sleep_ms,
+            fetch_limit=config.closed_poll_fetch_limit,
+        )
+
+    await _retry_startup_step_after_rate_limit(
+        step="startup_recovery",
+        config=config,
+        entry_gate=entry_gate,
+        action=initial_recovery,
     )
     _print_event("startup_recovery_finished", mode=config.mode, symbols=len(symbols))
     tasks = [
@@ -354,6 +379,7 @@ async def _poll_closed_1m_loop(
                 symbols=symbols,
                 intervals=intervals,
                 poll_sleep_ms=config.closed_poll_sleep_ms,
+                fetch_limit=config.closed_poll_fetch_limit,
             )
             _print_event("closed_bar_poll_finished", symbols=len(symbols))
             if counter.incremented_past_limit():
@@ -504,6 +530,7 @@ async def _consume_stream_url(
                     symbols=list(spec.symbols),
                     intervals=config.intervals,
                     recovery_sleep_ms=config.recovery_sleep_ms,
+                    fetch_limit=config.closed_poll_fetch_limit,
                 )
             needs_recovery = True
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
@@ -587,15 +614,70 @@ def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService
 
 def _stream_error_backoff_seconds(exc: Exception, config: StreamDaemonConfig) -> float:
     if isinstance(exc, BinanceApiError) and _is_rate_limit_error(exc):
+        ban_backoff = _binance_ban_backoff_seconds(str(exc))
+        if ban_backoff is not None:
+            return max(
+                config.reconnect_backoff_seconds,
+                config.rate_limit_backoff_seconds,
+                ban_backoff,
+            )
         return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
     text = str(exc)
     if "-1003" in text or " 429 " in text:
+        ban_backoff = _binance_ban_backoff_seconds(text)
+        if ban_backoff is not None:
+            return max(
+                config.reconnect_backoff_seconds,
+                config.rate_limit_backoff_seconds,
+                ban_backoff,
+            )
         return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
     return config.reconnect_backoff_seconds
 
 
+async def _retry_startup_step_after_rate_limit(
+    *,
+    step: str,
+    config: StreamDaemonConfig,
+    entry_gate: EntryHealthGate,
+    action: Callable[[], Awaitable[_T]],
+    sleep_func=asyncio.sleep,
+) -> _T:
+    while True:
+        try:
+            return await action()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_rate_limit_exception(exc):
+                raise
+            entry_gate.mark_stream_error(str(exc))
+            backoff = _stream_error_backoff_seconds(exc, config)
+            _print_event(
+                "startup_rate_limited",
+                step=step,
+                error=str(exc),
+                backoff_seconds=backoff,
+                entry_gate=entry_gate.snapshot(),
+            )
+            await sleep_func(backoff)
+
+
+def _binance_ban_backoff_seconds(text: str) -> float | None:
+    match = re.search(r"banned until (\d{13})", text)
+    if match is None:
+        return None
+    ban_until_seconds = int(match.group(1)) / 1000
+    return round(max(ban_until_seconds - time.time() + 1.0, 0.0), 3)
+
+
 def _is_rate_limit_error(exc: BinanceApiError) -> bool:
     return exc.status == 429 or exc.code == -1003
+
+
+def _is_rate_limit_exception(exc: Exception) -> bool:
+    if isinstance(exc, BinanceApiError):
+        return _is_rate_limit_error(exc)
+    text = str(exc)
+    return "-1003" in text or " 429 " in text or " 418 " in text
 
 
 def _seconds_until_next_closed_1m_poll(now: datetime, *, grace_seconds: float) -> float:
@@ -613,6 +695,7 @@ def _recover_symbols_1m_gap(
     symbols: list[str],
     intervals: tuple[str, ...],
     recovery_sleep_ms: int,
+    fetch_limit: int = 99,
 ) -> None:
     server_time_ms = int(rest_client.request("GET", "/fapi/v1/time")["serverTime"])
     end_time = latest_closed_1m_open_time(server_time_ms)
@@ -632,6 +715,7 @@ def _recover_symbols_1m_gap(
             start_time=start_time,
             end_time=end_time,
             server_time_ms=server_time_ms,
+            limit=fetch_limit,
         )
         result = replay_closed_1m_events(
             store=store,
@@ -666,6 +750,7 @@ async def _recover_symbols_1m_gap_async(
     recovery_sleep_ms: int,
     allow_entries: bool = False,
     allow_pyramid_add: bool = False,
+    fetch_limit: int = 99,
     sleep_func=asyncio.sleep,
     fetch_range=fetch_closed_klines_range,
 ) -> None:
@@ -691,6 +776,7 @@ async def _recover_symbols_1m_gap_async(
                 start_time=start_time,
                 end_time=end_time,
                 server_time_ms=server_time_ms,
+                limit=fetch_limit,
             )
             result = replay_closed_1m_events(
                 store=store,
@@ -724,6 +810,7 @@ async def _poll_closed_1m_once_async(
     symbols: list[str],
     intervals: tuple[str, ...],
     poll_sleep_ms: int,
+    fetch_limit: int = 99,
     sleep_func=asyncio.sleep,
     fetch_range=fetch_closed_klines_range,
 ) -> None:
@@ -738,6 +825,7 @@ async def _poll_closed_1m_once_async(
         recovery_sleep_ms=poll_sleep_ms,
         allow_entries=entry_gate.allow_entries,
         allow_pyramid_add=True,
+        fetch_limit=fetch_limit,
         sleep_func=sleep_func,
         fetch_range=fetch_range,
     )

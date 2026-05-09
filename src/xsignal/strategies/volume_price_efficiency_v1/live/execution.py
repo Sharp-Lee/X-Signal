@@ -185,6 +185,7 @@ def replace_trailing_stop(
         state=PositionState.OPEN,
         stop_price=candidate_stop_price,
         active_stop_client_order_id=client_order_id,
+        last_stop_replace_at=now,
     )
     update_live_position(store, updated)
     return updated

@@ -22,6 +22,7 @@ class LivePositionRecord:
     active_stop_client_order_id: str | None
     last_decision_open_time: datetime | None
     strategy_interval: str | None = None
+    last_stop_replace_at: datetime | None = None
 
 
 def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
@@ -38,7 +39,8 @@ def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
           add_count = ?,
           active_stop_client_order_id = ?,
           last_decision_open_time = ?,
-          strategy_interval = ?
+          strategy_interval = ?,
+          last_stop_replace_at = ?
         where position_id = ?
         """,
         (
@@ -53,6 +55,7 @@ def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
             record.active_stop_client_order_id,
             _dt(record.last_decision_open_time),
             record.strategy_interval,
+            _dt(record.last_stop_replace_at),
             record.position_id,
         ),
     )
@@ -103,6 +106,7 @@ def _from_row(row) -> LivePositionRecord:
         active_stop_client_order_id=row["active_stop_client_order_id"],
         last_decision_open_time=_parse_dt(row["last_decision_open_time"]),
         strategy_interval=row["strategy_interval"],
+        last_stop_replace_at=_parse_dt(row["last_stop_replace_at"]),
     )
 
 

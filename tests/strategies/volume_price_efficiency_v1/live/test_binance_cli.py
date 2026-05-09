@@ -209,6 +209,8 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "30",
             "--closed-poll-grace-seconds",
             "3.5",
+            "--closed-poll-fetch-limit",
+            "7",
             "--stop-after-events",
             "3",
         ]
@@ -224,6 +226,7 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.recovery_sleep_ms == 150
     assert args.closed_poll_sleep_ms == 30
     assert args.closed_poll_grace_seconds == 3.5
+    assert args.closed_poll_fetch_limit == 7
     assert args.stop_after_events == 3
 
 
@@ -462,6 +465,7 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
         max_streams=200,
         closed_poll_sleep_ms=30,
         closed_poll_grace_seconds=3.5,
+        closed_poll_fetch_limit=7,
         credentials=object(),
         daemon_runner=fake_runner,
     )
@@ -473,6 +477,7 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
     assert calls[0]["config"].max_streams == 200
     assert calls[0]["config"].closed_poll_sleep_ms == 30
     assert calls[0]["config"].closed_poll_grace_seconds == 3.5
+    assert calls[0]["config"].closed_poll_fetch_limit == 7
     assert calls[0]["credentials"] is not None
 
 
