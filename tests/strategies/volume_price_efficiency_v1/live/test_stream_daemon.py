@@ -11,6 +11,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
     _recover_symbols_1m_gap_async,
+    _should_parse_stream_message,
     _should_parse_stream_payload,
     _stream_error_backoff_seconds,
     build_daemon_stream_urls,
@@ -398,6 +399,21 @@ def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
         _stream_payload(symbol="ETHUSDT", closed=True),
         service,
     )
+
+
+def test_should_parse_stream_message_fast_skips_inactive_unclosed_updates():
+    service = ActiveSymbolService({"BTCUSDT"})
+    inactive_unclosed = (
+        '{"stream":"ethusdt@kline_1m","data":{"e":"kline","E":1778318492123,'
+        '"s":"ETHUSDT","k":{"t":1778313600000,"s":"ETHUSDT","i":"1m","x":false}}}'
+    )
+    active_unclosed = inactive_unclosed.replace("ethusdt", "btcusdt").replace("ETHUSDT", "BTCUSDT")
+    inactive_closed = inactive_unclosed.replace('"x":false', '"x":true')
+
+    assert not _should_parse_stream_message(inactive_unclosed, service)
+    assert _should_parse_stream_message(active_unclosed, service)
+    assert _should_parse_stream_message(inactive_closed, service)
+    assert _should_parse_stream_message(b"{not-json", service)
 
 
 def test_process_closed_1m_event_respects_entry_gate_for_aggregates():

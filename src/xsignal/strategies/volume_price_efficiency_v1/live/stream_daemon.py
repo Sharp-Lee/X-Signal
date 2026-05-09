@@ -300,6 +300,11 @@ async def _consume_stream_url(
                 async for message in websocket:
                     if stop_event.is_set():
                         return
+                    if not _should_parse_stream_message(message, service):
+                        if counter.incremented_past_limit():
+                            stop_event.set()
+                            return
+                        continue
                     payload = json.loads(message)
                     if not _should_parse_stream_payload(payload, service):
                         if counter.incremented_past_limit():
@@ -325,6 +330,33 @@ async def _consume_stream_url(
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
+
+
+def _should_parse_stream_message(message: str | bytes, service: RealtimeStrategyService) -> bool:
+    if isinstance(message, bytes):
+        try:
+            message = message.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+    if '"x":true' in message:
+        return True
+    if '"x":false' not in message:
+        return True
+    symbol = _extract_json_string_field(message, '"s":"')
+    if not symbol:
+        return True
+    return service.has_active_symbol_position(symbol)
+
+
+def _extract_json_string_field(message: str, marker: str) -> str | None:
+    start = message.find(marker)
+    if start < 0:
+        return None
+    start += len(marker)
+    end = message.find('"', start)
+    if end < 0:
+        return None
+    return message[start:end]
 
 
 def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService) -> bool:
