@@ -14,7 +14,10 @@ from xsignal.strategies.volume_price_efficiency_v1.live.bar_buffer import Rollin
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_adapter import (
     build_usd_futures_broker,
 )
-from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceRestClient
+from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import (
+    BinanceApiError,
+    BinanceRestClient,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.health_gate import EntryHealthGate
 from xsignal.strategies.volume_price_efficiency_v1.live.market_data import (
     fetch_closed_klines,
@@ -58,9 +61,10 @@ class StreamDaemonConfig:
     max_symbols: int | None = None
     max_streams: int = DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION
     reconnect_backoff_seconds: float = 5.0
+    rate_limit_backoff_seconds: float = 60.0
     reconcile_interval_seconds: float = 300.0
     seed_sleep_ms: int = 20
-    recovery_sleep_ms: int = 100
+    recovery_sleep_ms: int = 500
     stop_after_events: int | None = None
 
     def __post_init__(self) -> None:
@@ -70,6 +74,8 @@ class StreamDaemonConfig:
             raise ValueError("lookback_bars must be positive")
         if self.max_symbols is not None and self.max_symbols <= 0:
             raise ValueError("max_symbols must be positive")
+        if self.rate_limit_backoff_seconds < 0:
+            raise ValueError("rate_limit_backoff_seconds must be non-negative")
         if self.recovery_sleep_ms < 0:
             raise ValueError("recovery_sleep_ms must be non-negative")
         for interval in self.intervals:
@@ -314,7 +320,7 @@ async def _consume_stream_url(
         except Exception as exc:  # noqa: BLE001
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
-            await asyncio.sleep(config.reconnect_backoff_seconds)
+            await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
 
 
 def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService) -> bool:
@@ -330,6 +336,15 @@ def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService
     if not symbol:
         return True
     return service.has_active_symbol_position(symbol)
+
+
+def _stream_error_backoff_seconds(exc: Exception, config: StreamDaemonConfig) -> float:
+    if isinstance(exc, BinanceApiError) and (exc.status == 429 or exc.code == -1003):
+        return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
+    text = str(exc)
+    if "-1003" in text or " 429 " in text:
+        return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
+    return config.reconnect_backoff_seconds
 
 
 def _recover_symbols_1m_gap(

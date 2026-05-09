@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeEventResult
 from xsignal.strategies.volume_price_efficiency_v1.live import stream_daemon as stream_daemon_module
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
@@ -7,6 +8,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
     _should_parse_stream_payload,
+    _stream_error_backoff_seconds,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
     seed_rolling_buffers,
@@ -149,7 +151,8 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     assert config.lookback_bars == 120
     assert config.max_streams == 200
     assert config.seed_sleep_ms == 20
-    assert config.recovery_sleep_ms == 100
+    assert config.recovery_sleep_ms == 500
+    assert config.rate_limit_backoff_seconds == 60.0
 
 
 def test_build_daemon_stream_urls_subscribes_only_to_1m_source_streams():
@@ -216,6 +219,24 @@ def test_recover_symbols_1m_gap_uses_slower_recovery_sleep(monkeypatch):
     )
 
     assert sleeps == [0.1, 0.1]
+
+
+def test_stream_error_backoff_uses_longer_delay_for_rate_limits():
+    config = StreamDaemonConfig(
+        mode="testnet",
+        db_path="live.sqlite",
+        reconnect_backoff_seconds=5.0,
+        rate_limit_backoff_seconds=60.0,
+    )
+
+    assert (
+        _stream_error_backoff_seconds(
+            BinanceApiError(status=429, code=-1003, message="too many requests"),
+            config,
+        )
+        == 60.0
+    )
+    assert _stream_error_backoff_seconds(RuntimeError("closed"), config) == 5.0
 
 
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():

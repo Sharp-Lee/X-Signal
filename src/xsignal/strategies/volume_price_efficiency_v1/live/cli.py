@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--max-streams", type=int)
     stream_daemon.add_argument("--lookback-bars", type=int, default=120)
     stream_daemon.add_argument("--seed-sleep-ms", type=int, default=20)
-    stream_daemon.add_argument("--recovery-sleep-ms", type=int, default=100)
+    stream_daemon.add_argument("--recovery-sleep-ms", type=int, default=500)
     stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
     stream_daemon.add_argument("--env-file", type=Path)
     stream_daemon.add_argument("--stop-after-events", type=int)
@@ -438,7 +438,7 @@ def run_stream_daemon_command(
     acknowledge_live: bool,
     live_enabled: bool | None = None,
     seed_sleep_ms: int = 20,
-    recovery_sleep_ms: int = 100,
+    recovery_sleep_ms: int = 500,
     reconcile_interval_seconds: float = 300.0,
     stop_after_events: int | None = None,
     max_streams: int | None = None,
