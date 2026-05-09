@@ -340,3 +340,19 @@ The first live preset still forces isolated margin and `1x` leverage. Different
 symbol maximum-leverage brackets therefore do not affect order acceptance yet;
 if leverage is raised later, `/fapi/v1/leverageBracket` must become part of the
 preflight gate.
+
+Signed order submission can return an HTTP timeout after Binance has already
+accepted the request. The testnet lifecycle treats these as unknown states, not
+as simple failures:
+
+- entry market-buy timeout: query `/fapi/v1/order` by `newClientOrderId`, then
+  verify the position before placing protection
+- protective stop timeout: query `/fapi/v1/algoOrder` by `clientAlgoId`; if the
+  stop cannot be confirmed, attempt to cancel that `clientAlgoId` and close the
+  position
+- reduce-only close timeout: query `/fapi/v1/order` and verify the position is
+  flat before declaring success
+
+This is still a smoke lifecycle, not a full production recovery daemon. The
+production runner should persist every client id before submission and resume
+the same reconciliation flow after process restart.

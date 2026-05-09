@@ -53,6 +53,10 @@ class FakeLifecycleBroker:
         self.calls.append(("market_buy", symbol, quantity, client_order_id))
         return {}
 
+    def get_order(self, *, symbol, client_order_id):
+        self.calls.append(("get_order", symbol, client_order_id))
+        return {"symbol": symbol, "clientOrderId": client_order_id, "status": "FILLED"}
+
     def get_position_risk(self, *, symbol):
         self.calls.append(("get_position_risk", symbol))
         return self.position_risk_payloads.pop(0)
@@ -217,6 +221,102 @@ def test_run_testnet_lifecycle_retries_until_position_is_visible():
 
     assert result.opened_position_amount == pytest.approx(0.001)
     assert [call[0] for call in broker.calls].count("get_position_risk") == 4
+
+
+def test_run_testnet_lifecycle_recovers_when_entry_submit_times_out_but_order_filled():
+    class EntryTimeoutBroker(FakeLifecycleBroker):
+        def market_buy(self, *, symbol, quantity, client_order_id):
+            self.calls.append(("market_buy", symbol, quantity, client_order_id))
+            raise TimeoutError("entry submit timed out")
+
+    broker = EntryTimeoutBroker()
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+    )
+
+    assert result.final_position_amount == pytest.approx(0.0)
+    assert [call[0] for call in broker.calls][0:5] == [
+        "change_margin_type",
+        "change_leverage",
+        "market_buy",
+        "get_order",
+        "get_position_risk",
+    ]
+
+
+def test_run_testnet_lifecycle_recovers_when_stop_submit_times_out_but_algo_order_exists():
+    class StopTimeoutBroker(FakeLifecycleBroker):
+        def place_stop_market_close(self, *, symbol, stop_price, client_order_id):
+            self.calls.append(("place_stop_market_close", symbol, stop_price, client_order_id))
+            raise TimeoutError("stop submit timed out")
+
+    broker = StopTimeoutBroker()
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+    )
+
+    assert result.final_position_amount == pytest.approx(0.0)
+    assert [call[0] for call in broker.calls].count("get_open_order") == 2
+
+
+def test_run_testnet_lifecycle_cancels_unknown_stop_after_stop_submit_timeout():
+    class UnknownStopBroker(FakeLifecycleBroker):
+        def place_stop_market_close(self, *, symbol, stop_price, client_order_id):
+            self.calls.append(("place_stop_market_close", symbol, stop_price, client_order_id))
+            raise TimeoutError("stop submit timed out")
+
+        def get_open_order(self, *, symbol, client_order_id):
+            self.calls.append(("get_open_order", symbol, client_order_id))
+            raise TimeoutError("stop query timed out")
+
+    broker = UnknownStopBroker()
+
+    with pytest.raises(RuntimeError, match="protective stop submit status is unknown"):
+        run_testnet_lifecycle(
+            broker=broker,
+            symbol="BTCUSDT",
+            quantity=0.001,
+            stop_offset_pct=0.05,
+            position_id="test-position",
+        )
+
+    call_names = [call[0] for call in broker.calls]
+    assert "cancel_order" in call_names
+    assert "market_sell_reduce_only" in call_names
+
+
+def test_run_testnet_lifecycle_treats_close_submit_timeout_as_success_when_flat():
+    class CloseTimeoutBroker(FakeLifecycleBroker):
+        def market_sell_reduce_only(self, *, symbol, quantity, client_order_id):
+            self.calls.append(("market_sell_reduce_only", symbol, quantity, client_order_id))
+            raise TimeoutError("close submit timed out")
+
+    broker = CloseTimeoutBroker()
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        position_id="test-position",
+    )
+
+    assert result.final_position_amount == pytest.approx(0.0)
+    assert [call[0] for call in broker.calls][-3:] == [
+        "market_sell_reduce_only",
+        "get_order",
+        "get_position_risk",
+    ]
 
 
 def test_run_testnet_lifecycle_treats_empty_final_position_risk_as_flat():

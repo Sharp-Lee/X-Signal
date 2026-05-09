@@ -166,6 +166,14 @@ class BinanceUsdFuturesTestnetBroker:
             params={"symbol": symbol},
         )
 
+    def get_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
+        return self.rest_client.request(
+            "GET",
+            "/fapi/v1/order",
+            signed=True,
+            params={"symbol": symbol, "origClientOrderId": client_order_id},
+        )
+
     def get_open_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
         return self.rest_client.request(
             "GET",
