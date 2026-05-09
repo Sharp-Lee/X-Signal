@@ -52,12 +52,17 @@ class FakeStore:
     def __init__(self) -> None:
         self.bars = []
         self.cursors = []
+        self.commits = 0
+        self.connection = self
 
-    def upsert_market_bar(self, row) -> None:
-        self.bars.append(row)
+    def commit(self) -> None:
+        self.commits += 1
 
-    def advance_market_cursor(self, *, symbol, interval, open_time) -> None:
-        self.cursors.append((symbol, interval, open_time))
+    def upsert_market_bar(self, row, *, commit=True) -> None:
+        self.bars.append((row, commit))
+
+    def advance_market_cursor(self, *, symbol, interval, open_time, commit=True) -> None:
+        self.cursors.append((symbol, interval, open_time, commit))
 
 
 class FakeRecoveryRestClient:
@@ -454,7 +459,9 @@ def test_process_closed_1m_event_respects_entry_gate_for_aggregates():
         entry_gate=ClosedEntryGate(),
     )
 
-    assert [bar["interval"] for bar in store.bars] == ["1m", "1h"]
-    assert store.cursors == [("BTCUSDT", "1m", event.open_time)]
+    assert [bar["interval"] for bar, commit in store.bars] == ["1m", "1h"]
+    assert [commit for bar, commit in store.bars] == [False, False]
+    assert store.cursors == [("BTCUSDT", "1m", event.open_time, False)]
+    assert store.commits == 1
     assert service.price_calls == [(event, True)]
     assert service.closed_calls == [(aggregate, False, True)]

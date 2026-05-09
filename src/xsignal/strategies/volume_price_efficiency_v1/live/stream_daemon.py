@@ -497,18 +497,24 @@ def _process_closed_1m_event(
     event,
     entry_gate: EntryHealthGate | None = None,
 ) -> None:
-    store.upsert_market_bar(market_bar_from_event(event))
-    store.advance_market_cursor(symbol=event.symbol, interval="1m", open_time=event.open_time)
+    store.upsert_market_bar(market_bar_from_event(event), commit=False)
+    store.advance_market_cursor(
+        symbol=event.symbol,
+        interval="1m",
+        open_time=event.open_time,
+        commit=False,
+    )
     price_result = service.process_price_event(event, allow_pyramid_add=True)
     _print_strategy_action(event=event, result=price_result)
     for aggregate in aggregator.apply_1m_event(event):
-        store.upsert_market_bar(market_bar_from_event(aggregate))
+        store.upsert_market_bar(market_bar_from_event(aggregate), commit=False)
         result = service.process_closed_bar(
             aggregate,
             allow_entry=True if entry_gate is None else entry_gate.allow_entries,
             allow_pyramid_add=True,
         )
         _print_strategy_action(event=aggregate, result=result)
+    store.connection.commit()
 
 
 def _print_strategy_action(*, event, result) -> None:
