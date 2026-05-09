@@ -178,6 +178,30 @@ def seed_rolling_buffers(
     return buffers
 
 
+def seed_rolling_buffers_from_store(
+    store: LiveStore,
+    *,
+    symbols: list[str],
+    intervals: list[str] | tuple[str, ...],
+    lookback_bars: int,
+    max_bars: int,
+) -> dict[str, RollingBarBuffer]:
+    buffers = {
+        interval: RollingBarBuffer(interval=interval, max_bars=max_bars)
+        for interval in intervals
+    }
+    for interval, buffer in buffers.items():
+        for symbol in symbols:
+            buffer.seed_rows(
+                store.list_recent_market_bars(
+                    symbol=symbol,
+                    interval=interval,
+                    limit=lookback_bars,
+                )
+            )
+    return buffers
+
+
 def run_stream_daemon(*, config: StreamDaemonConfig, credentials) -> int:
     return asyncio.run(run_stream_daemon_async(config=config, credentials=credentials))
 
@@ -197,24 +221,21 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     if not symbols:
         raise RuntimeError("no Binance USD-M symbols selected")
 
-    server_time_ms = int(broker.rest_client.request("GET", "/fapi/v1/time")["serverTime"])
     _print_event(
         "seed_started",
         mode=config.mode,
         symbols=len(symbols),
         intervals=list(config.intervals),
+        source="store",
     )
-    buffers = seed_rolling_buffers(
-        broker.rest_client,
+    buffers = seed_rolling_buffers_from_store(
+        store,
         symbols=symbols,
         intervals=config.intervals,
         lookback_bars=config.lookback_bars,
-        server_time_ms=server_time_ms,
         max_bars=config.lookback_bars,
-        seed_sleep_ms=config.seed_sleep_ms,
-        rate_limit_backoff_seconds=config.rate_limit_backoff_seconds,
     )
-    _print_event("seed_finished", mode=config.mode, symbols=len(symbols))
+    _print_event("seed_finished", mode=config.mode, symbols=len(symbols), source="store")
     _print_event(
         "stream_daemon_started",
         mode=config.mode,

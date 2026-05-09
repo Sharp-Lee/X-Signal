@@ -239,6 +239,8 @@ class RealtimeStrategyService:
                 interval=record.strategy_interval or event.interval,
                 symbol=event.symbol,
             )
+            if atr is None:
+                atr = record.atr_at_entry
             updated_record, stop_delta, add_delta = self._maintain_position_record(
                 record=record,
                 event=event,

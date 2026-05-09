@@ -168,6 +168,9 @@ def test_store_persists_closed_market_bars_and_lists_them_in_time_order(tmp_path
     assert rows[1]["quote_volume"] == 12.5
     assert rows[0]["is_complete"] is True
 
+    recent = store.list_recent_market_bars(symbol="BTCUSDT", interval="1m", limit=1)
+    assert [row["open_time"] for row in recent] == [first_open]
+
 
 def test_store_advances_market_cursor_without_regressing(tmp_path):
     store = LiveStore.open(tmp_path / "live.sqlite")

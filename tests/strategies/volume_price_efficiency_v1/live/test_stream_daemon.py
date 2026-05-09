@@ -21,6 +21,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     _stream_error_backoff_seconds,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
+    seed_rolling_buffers_from_store,
     seed_rolling_buffers,
     ws_base_url_for_mode,
 )
@@ -289,6 +290,38 @@ def test_seed_rolling_buffers_backs_off_and_retries_rate_limits(monkeypatch):
 
     assert client.calls == 2
     assert sleeps == [7]
+    assert buffers["1h"].to_arrays().symbols == ("BTCUSDT",)
+
+
+def test_seed_rolling_buffers_from_store_avoids_rest_seed_requests():
+    calls = []
+
+    class StoreBackedSeed:
+        def list_recent_market_bars(self, *, symbol, interval, limit):
+            calls.append((symbol, interval, limit))
+            return [
+                {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "open_time": datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "quote_volume": 10.0,
+                    "is_complete": True,
+                }
+            ]
+
+    buffers = seed_rolling_buffers_from_store(
+        StoreBackedSeed(),
+        symbols=["BTCUSDT"],
+        intervals=["1h"],
+        lookback_bars=120,
+        max_bars=120,
+    )
+
+    assert calls == [("BTCUSDT", "1h", 120)]
     assert buffers["1h"].to_arrays().symbols == ("BTCUSDT",)
 
 

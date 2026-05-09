@@ -311,6 +311,52 @@ def test_service_reports_active_symbol_positions(tmp_path):
 
     assert service.has_active_symbol_position("BTCUSDT")
     assert not service.has_active_symbol_position("ETHUSDT")
+    assert service.active_symbols() == ("BTCUSDT",)
+
+
+def test_price_event_falls_back_to_entry_atr_when_buffers_are_warming(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
+    update_live_position(
+        store,
+        LivePositionRecord(
+            position_id=position_id,
+            symbol="BTCUSDT",
+            state=PositionState.OPEN,
+            entry_price=100.0,
+            quantity=0.1,
+            highest_high=100.0,
+            stop_price=80.0,
+            atr_at_entry=5.0,
+            next_add_trigger=None,
+            add_count=0,
+            active_stop_client_order_id="old-stop",
+            last_decision_open_time=None,
+            strategy_interval="4h",
+        ),
+    )
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(),
+        environment="testnet",
+        buffers={},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, False),
+    )
+
+    result = service.process_price_event(
+        _event(closed=False, interval="1m", high=110.0, close=106.0),
+        allow_pyramid_add=False,
+    )
+
+    assert result.stop_updates == 1
+    assert [call[0] for call in broker.calls] == ["cancel_order", "place_stop_market_close"]
+    assert get_live_position(store, position_id).stop_price == 95.0
 
 
 def test_1m_price_event_can_update_highest_high_without_replacing_stop_during_recovery(tmp_path):

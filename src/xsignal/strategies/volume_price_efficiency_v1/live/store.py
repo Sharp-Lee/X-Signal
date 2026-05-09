@@ -525,6 +525,41 @@ class LiveStore:
             for row in rows
         ]
 
+    def list_recent_market_bars(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        validate_interval(interval)
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = self.connection.execute(
+            """
+            select symbol, interval, open_time, open, high, low, close, quote_volume, is_complete
+            from market_bars
+            where symbol = ? and interval = ?
+            order by open_time desc
+            limit ?
+            """,
+            (symbol, interval, limit),
+        ).fetchall()
+        return [
+            {
+                "symbol": row["symbol"],
+                "interval": row["interval"],
+                "open_time": _parse_dt(row["open_time"]),
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "quote_volume": row["quote_volume"],
+                "is_complete": bool(row["is_complete"]),
+            }
+            for row in reversed(rows)
+        ]
+
     def get_market_cursor(self, *, symbol: str, interval: str) -> datetime | None:
         validate_interval(interval)
         row = self.connection.execute(
