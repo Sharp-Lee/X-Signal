@@ -147,11 +147,32 @@ def replace_trailing_stop(
         stop_price=candidate_stop_price,
         now=now,
     )
-    stop_order = broker.place_stop_market_close(
-        symbol=record.symbol,
-        stop_price=candidate_stop_price,
-        client_order_id=client_order_id,
-    )
+    if record.active_stop_client_order_id:
+        try:
+            broker.cancel_order(symbol=record.symbol, client_order_id=record.active_stop_client_order_id)
+        except Exception as exc:
+            store.update_order_intent_status(
+                client_order_id=client_order_id,
+                status=OrderIntentStatus.ERROR,
+                resolved_at=now,
+                last_error=str(exc),
+            )
+            raise
+    try:
+        stop_order = broker.place_stop_market_close(
+            symbol=record.symbol,
+            stop_price=candidate_stop_price,
+            client_order_id=client_order_id,
+        )
+    except Exception as exc:
+        store.update_order_intent_status(
+            client_order_id=client_order_id,
+            status=OrderIntentStatus.ERROR,
+            resolved_at=now,
+            last_error=str(exc),
+        )
+        update_live_position(store, replace(record, state=PositionState.ERROR_LOCKED))
+        raise
     store.update_order_intent_status(
         client_order_id=client_order_id,
         status=OrderIntentStatus.EXCHANGE_CONFIRMED,
@@ -159,8 +180,6 @@ def replace_trailing_stop(
         exchange_status=str(stop_order.get("algoStatus") or stop_order.get("status") or "UNKNOWN"),
         submitted_at=now,
     )
-    if record.active_stop_client_order_id:
-        broker.cancel_order(symbol=record.symbol, client_order_id=record.active_stop_client_order_id)
     updated = replace(
         record,
         state=PositionState.OPEN,

@@ -308,7 +308,7 @@ def test_run_live_cycle_trails_existing_stop_upward(tmp_path):
 
     assert result.stop_updates == 1
     assert get_live_position(store, position_id).stop_price == 95.0
-    assert [call[0] for call in broker.calls] == ["place_stop_market_close", "cancel_order"]
+    assert [call[0] for call in broker.calls] == ["cancel_order", "place_stop_market_close"]
 
 
 def test_run_live_cycle_submits_pyramid_add_when_execution_price_confirms(tmp_path):

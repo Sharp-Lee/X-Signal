@@ -182,8 +182,8 @@ def test_unclosed_event_can_move_stop_and_trigger_pyramid_add(tmp_path):
     assert result.adds == 1
     assert get_live_position(store, position_id).quantity == 0.2
     assert [call[0] for call in broker.calls] == [
-        "place_stop_market_close",
         "cancel_order",
+        "place_stop_market_close",
         "market_buy",
     ]
 
@@ -270,7 +270,7 @@ def test_1m_price_event_uses_position_strategy_interval_and_can_disable_retroact
     assert result.stop_updates == 1
     assert result.adds == 0
     assert get_live_position(store, position_id).highest_high == 110.0
-    assert [call[0] for call in broker.calls] == ["place_stop_market_close", "cancel_order"]
+    assert [call[0] for call in broker.calls] == ["cancel_order", "place_stop_market_close"]
 
 
 def test_1m_price_event_can_update_highest_high_without_replacing_stop_during_recovery(tmp_path):
