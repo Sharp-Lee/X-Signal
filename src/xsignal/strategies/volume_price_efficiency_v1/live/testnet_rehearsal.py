@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
+import subprocess
+import time
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
 from xsignal.strategies.volume_price_efficiency_v1.live.config import LiveTradingConfig
@@ -20,6 +22,10 @@ from xsignal.strategies.volume_price_efficiency_v1.live.position_store import (
     get_live_position,
     list_active_live_positions,
     update_live_position,
+)
+from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import (
+    ReconcileSummary,
+    run_reconciliation_pass,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 
@@ -46,6 +52,133 @@ class ProtectedCloseResult:
     canceled_stop_client_order_id: str | None
     close_client_order_id: str
     final_position_amount: float
+
+
+@dataclass(frozen=True)
+class TestnetRehearsalReport:
+    status: str
+    open: ProtectedOpenResult
+    protected_reconcile: ReconcileSummary
+    restart: dict[str, object]
+    post_restart_reconcile: ReconcileSummary
+    close: ProtectedCloseResult
+    final_reconcile: ReconcileSummary
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "open": vars(self.open),
+            "protected_reconcile": self.protected_reconcile.to_dict(),
+            "restart": self.restart,
+            "post_restart_reconcile": self.post_restart_reconcile.to_dict(),
+            "close": vars(self.close),
+            "final_reconcile": self.final_reconcile.to_dict(),
+        }
+
+
+def run_testnet_rehearsal(
+    *,
+    store: LiveStore,
+    broker,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    service_name: str,
+    restart_service: bool = True,
+    restart_runner=None,
+    sleep_after_restart_seconds: float = 4.0,
+    sleeper=time.sleep,
+    now: datetime | None = None,
+) -> TestnetRehearsalReport:
+    now = now or datetime.now(timezone.utc)
+    restart_runner = restart_runner or _restart_systemd_service
+    opened = open_protected_rehearsal_position(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        now=now,
+    )
+    protected_reconcile = run_reconciliation_pass(
+        store=store,
+        broker=broker,
+        symbols=[symbol],
+        environment="testnet",
+        allow_repair=False,
+        now=now,
+    )
+    if restart_service and protected_reconcile.error_count == 0:
+        try:
+            restart_runner(service_name)
+        except Exception as exc:
+            restart = {
+                "enabled": True,
+                "service": service_name,
+                "status": "ERROR",
+                "error": str(exc),
+            }
+        else:
+            if sleep_after_restart_seconds > 0:
+                sleeper(sleep_after_restart_seconds)
+            restart = {
+                "enabled": True,
+                "service": service_name,
+                "status": "RESTARTED",
+            }
+    elif restart_service:
+        restart = {
+            "enabled": True,
+            "service": service_name,
+            "status": "SKIPPED_RECONCILE_ERROR",
+        }
+    else:
+        restart = {
+            "enabled": False,
+            "service": service_name,
+            "status": "SKIPPED",
+        }
+    post_restart_reconcile = run_reconciliation_pass(
+        store=store,
+        broker=broker,
+        symbols=[symbol],
+        environment="testnet",
+        allow_repair=False,
+        now=datetime.now(timezone.utc),
+    )
+    closed = close_rehearsal_position(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        position_id=opened.position_id,
+        now=datetime.now(timezone.utc),
+    )
+    final_reconcile = run_reconciliation_pass(
+        store=store,
+        broker=broker,
+        symbols=[symbol],
+        environment="testnet",
+        allow_repair=False,
+        now=datetime.now(timezone.utc),
+    )
+    status = (
+        "OK"
+        if protected_reconcile.error_count == 0
+        and post_restart_reconcile.error_count == 0
+        and final_reconcile.error_count == 0
+        and closed.final_position_amount == 0.0
+        and restart["status"] in {"RESTARTED", "SKIPPED"}
+        else "ERROR"
+    )
+    return TestnetRehearsalReport(
+        status=status,
+        open=opened,
+        protected_reconcile=protected_reconcile,
+        restart=restart,
+        post_restart_reconcile=post_restart_reconcile,
+        close=closed,
+        final_reconcile=final_reconcile,
+    )
 
 
 def open_protected_rehearsal_position(
@@ -242,6 +375,10 @@ def _set_isolated_margin(broker, symbol: str) -> None:
         if exc.code == -4046:
             return
         raise
+
+
+def _restart_systemd_service(service_name: str) -> None:
+    subprocess.run(["systemctl", "restart", service_name], check=True)
 
 
 def _entry_and_stop_client_ids(*, store: LiveStore, position_id: str) -> tuple[str, str]:

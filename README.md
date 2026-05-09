@@ -434,6 +434,24 @@ xsignal-vpe-live testnet-close-protected \
 Both commands are testnet-only and require the explicit acknowledgement flag
 because they change Binance testnet account state.
 
+Run the full deployment rehearsal in one command:
+
+```bash
+xsignal-vpe-live testnet-rehearsal \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol ADAUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+This command opens a protected testnet position, runs read-only reconciliation,
+restarts the testnet stream daemon, reconciles again, closes the rehearsal
+position through the audited reduce-only path, and runs a final read-only
+reconciliation. It returns non-zero if any reconciliation step reports an error
+or the close verification is not flat.
+
 ## VPE Automatic Live Cycle
 
 The preferred automatic runner is the realtime WebSocket daemon. In steady

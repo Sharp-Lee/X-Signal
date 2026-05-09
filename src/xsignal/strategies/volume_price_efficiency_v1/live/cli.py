@@ -39,12 +39,14 @@ from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
     close_rehearsal_position,
     open_protected_rehearsal_position,
+    run_testnet_rehearsal,
 )
 
 
 LOCAL_TESTNET_ENV_FILE = Path(".secrets/binance-testnet.env")
 LOCAL_LIVE_ENV_FILE = Path(".secrets/binance-live.env")
 SYSTEM_LIVE_ENABLE_FILE = Path("/etc/xsignal/enable-live-trading")
+DEFAULT_TESTNET_STREAM_SERVICE = "xsignal-vpe-testnet-stream-daemon.service"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,6 +100,16 @@ def build_parser() -> argparse.ArgumentParser:
     testnet_close.add_argument("--position-id")
     testnet_close.add_argument("--env-file", type=Path)
     testnet_close.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_rehearsal = subparsers.add_parser("testnet-rehearsal")
+    testnet_rehearsal.add_argument("--db", type=Path, required=True)
+    testnet_rehearsal.add_argument("--symbol", required=True)
+    testnet_rehearsal.add_argument("--notional", type=float, required=True)
+    testnet_rehearsal.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_rehearsal.add_argument("--env-file", type=Path)
+    testnet_rehearsal.add_argument("--service-name", default=DEFAULT_TESTNET_STREAM_SERVICE)
+    testnet_rehearsal.add_argument("--skip-restart", action="store_true")
+    testnet_rehearsal.add_argument("--i-understand-testnet-order", action="store_true")
 
     run_cycle = subparsers.add_parser("run-cycle")
     run_cycle.add_argument("--mode", choices=["testnet", "live"], required=True)
@@ -408,6 +420,52 @@ def run_testnet_close_protected_command(
     return 0
 
 
+def run_testnet_rehearsal_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    env_file: Path | None,
+    service_name: str,
+    skip_restart: bool,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=run_testnet_rehearsal,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-rehearsal requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-rehearsal",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        service_name=service_name,
+        restart_service=not skip_restart,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0 if result.status == "OK" else 1
+
+
 def run_status_command(
     *,
     db: Path,
@@ -652,6 +710,17 @@ def main(argv: list[str] | None = None) -> int:
             position_id=args.position_id,
             acknowledge=args.i_understand_testnet_order,
             env_file=args.env_file,
+        )
+    if args.command == "testnet-rehearsal":
+        return run_testnet_rehearsal_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            env_file=args.env_file,
+            service_name=args.service_name,
+            skip_restart=args.skip_restart,
+            acknowledge=args.i_understand_testnet_order,
         )
     if args.command == "status":
         return run_status_command(

@@ -16,6 +16,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
     close_rehearsal_position,
     open_protected_rehearsal_position,
+    run_testnet_rehearsal,
 )
 
 
@@ -234,3 +235,148 @@ def test_close_rehearsal_position_uses_exchange_position_amount_for_reduce_only(
     close_calls = [call for call in broker.calls if call[0] == "market_sell_reduce_only"]
     assert close_calls[0][2] == 0.10
     assert result.quantity == 0.10
+
+
+class FullRehearsalBroker(OpenBroker):
+    def __init__(self, store: LiveStore) -> None:
+        super().__init__(store)
+        self.position_amount = "0"
+        self.position_price = "0"
+        self.open_stop_client_order_id = None
+
+    def market_buy(self, *, symbol, quantity, client_order_id):
+        order = super().market_buy(
+            symbol=symbol,
+            quantity=quantity,
+            client_order_id=client_order_id,
+        )
+        self.position_amount = str(quantity)
+        self.position_price = "100.0"
+        return order
+
+    def place_stop_market_close(self, *, symbol, stop_price, client_order_id):
+        order = super().place_stop_market_close(
+            symbol=symbol,
+            stop_price=stop_price,
+            client_order_id=client_order_id,
+        )
+        self.open_stop_client_order_id = client_order_id
+        return order
+
+    def get_all_position_risk(self):
+        return [
+            {
+                "symbol": "SOLUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": self.position_amount,
+            }
+        ]
+
+    def get_position_risk(self, *, symbol):
+        self.calls.append(("get_position_risk", symbol))
+        return [
+            {
+                "symbol": symbol,
+                "positionSide": "BOTH",
+                "positionAmt": self.position_amount,
+                "entryPrice": self.position_price,
+            }
+        ]
+
+    def get_order(self, *, symbol, client_order_id):
+        return {"symbol": symbol, "clientOrderId": client_order_id, "status": "FILLED"}
+
+    def get_open_order(self, *, symbol, client_order_id):
+        return {
+            "symbol": symbol,
+            "clientAlgoId": client_order_id,
+            "algoStatus": "NEW",
+            "type": "STOP_MARKET",
+            "side": "SELL",
+            "closePosition": True,
+        }
+
+    def get_open_orders(self, *, symbol):
+        if self.open_stop_client_order_id is None:
+            return []
+        return [
+            {
+                "symbol": symbol,
+                "clientAlgoId": self.open_stop_client_order_id,
+                "algoStatus": "NEW",
+                "type": "STOP_MARKET",
+                "side": "SELL",
+                "closePosition": True,
+            }
+        ]
+
+    def cancel_order(self, *, symbol, client_order_id):
+        self.calls.append(("cancel_order", symbol, client_order_id))
+        self.open_stop_client_order_id = None
+        return {"algoStatus": "CANCELED"}
+
+    def market_sell_reduce_only(self, *, symbol, quantity, client_order_id):
+        self.calls.append(("market_sell_reduce_only", symbol, quantity, client_order_id))
+        self.position_amount = "0"
+        return {"orderId": 44, "status": "FILLED"}
+
+
+def test_run_testnet_rehearsal_opens_restarts_closes_and_reports_clean(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FullRehearsalBroker(store)
+    restarts = []
+
+    report = run_testnet_rehearsal(
+        store=store,
+        broker=broker,
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        service_name="xsignal-vpe-testnet-stream-daemon.service",
+        restart_runner=restarts.append,
+        sleep_after_restart_seconds=0,
+        now=NOW,
+    )
+
+    assert report.status == "OK"
+    assert report.open.position_id == "SOLUSDT-1"
+    assert report.protected_reconcile.error_count == 0
+    assert report.protected_reconcile.findings[0].status == "PROTECTED"
+    assert report.restart == {
+        "enabled": True,
+        "service": "xsignal-vpe-testnet-stream-daemon.service",
+        "status": "RESTARTED",
+    }
+    assert restarts == ["xsignal-vpe-testnet-stream-daemon.service"]
+    assert report.close.final_position_amount == 0.0
+    assert report.final_reconcile.error_count == 0
+    assert report.final_reconcile.findings[0].status == "CLEAN"
+
+
+def test_run_testnet_rehearsal_closes_position_when_restart_fails(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FullRehearsalBroker(store)
+
+    def fail_restart(service_name):
+        raise RuntimeError(f"restart failed for {service_name}")
+
+    report = run_testnet_rehearsal(
+        store=store,
+        broker=broker,
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        service_name="xsignal-vpe-testnet-stream-daemon.service",
+        restart_runner=fail_restart,
+        sleep_after_restart_seconds=0,
+        now=NOW,
+    )
+
+    assert report.status == "ERROR"
+    assert report.restart["status"] == "ERROR"
+    assert "restart failed" in report.restart["error"]
+    assert report.close.final_position_amount == 0.0
+    assert report.final_reconcile.error_count == 0
+    assert get_live_position(store, report.open.position_id).state == PositionState.CLOSED

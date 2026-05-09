@@ -187,9 +187,27 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
             str(tmp_path / "binance-testnet.env"),
         ]
     )
+    rehearsal_args = parser.parse_args(
+        [
+            "testnet-rehearsal",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "ADAUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+            "--service-name",
+            "xsignal-vpe-testnet-stream-daemon.service",
+        ]
+    )
 
     assert "testnet-open-protected" in subcommands
     assert "testnet-close-protected" in subcommands
+    assert "testnet-rehearsal" in subcommands
     assert open_args.command == "testnet-open-protected"
     assert open_args.db == tmp_path / "live.sqlite"
     assert open_args.symbol == "SOLUSDT"
@@ -201,6 +219,12 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
     assert close_args.position_id == "SOLUSDT-1"
     assert close_args.env_file == tmp_path / "binance-testnet.env"
     assert not close_args.i_understand_testnet_order
+    assert rehearsal_args.command == "testnet-rehearsal"
+    assert rehearsal_args.symbol == "ADAUSDT"
+    assert rehearsal_args.notional == 8.0
+    assert rehearsal_args.service_name == "xsignal-vpe-testnet-stream-daemon.service"
+    assert not rehearsal_args.skip_restart
+    assert not rehearsal_args.i_understand_testnet_order
 
 
 def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
@@ -492,6 +516,24 @@ def test_testnet_close_protected_requires_explicit_acknowledgement(tmp_path, cap
     assert "--i-understand-testnet-order" in captured.err
 
 
+def test_testnet_rehearsal_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_rehearsal_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=False,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
 def test_testnet_open_protected_runs_runner_and_prints_result(tmp_path, capsys):
     calls = []
 
@@ -600,6 +642,52 @@ def test_testnet_close_protected_runs_runner_and_prints_result(tmp_path, capsys)
     assert calls[0]["position_id"] == "SOLUSDT-1"
     assert calls[0]["store"] is not None
     assert '"final_position_amount": 0.0' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_rehearsal_runs_runner_and_returns_nonzero_on_reconcile_error(
+    tmp_path,
+    capsys,
+):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="ERROR",
+            open=SimpleNamespace(position_id="ADAUSDT-1"),
+            protected_reconcile=SimpleNamespace(error_count=1),
+            restart={"status": "SKIPPED"},
+            close=SimpleNamespace(final_position_amount=0.0),
+            final_reconcile=SimpleNamespace(error_count=0),
+            to_dict=lambda: {
+                "status": "ERROR",
+                "open": {"position_id": "ADAUSDT-1"},
+                "protected_reconcile": {"error_count": 1},
+                "restart": {"status": "SKIPPED"},
+                "close": {"final_position_amount": 0.0},
+                "final_reconcile": {"error_count": 0},
+            },
+        )
+
+    result = cli.run_testnet_rehearsal_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=True,
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls[0]["restart_service"] is False
+    assert calls[0]["service_name"] == "svc"
+    assert '"status": "ERROR"' in captured.out
     assert "secret" not in captured.out.lower()
 
 

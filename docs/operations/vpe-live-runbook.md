@@ -252,6 +252,19 @@ After closing, run status and read-only reconciliation again. Expected state:
 - the closed symbol is absent from active local positions
 - the daemon remains `OVERALL OK`
 
+The same deployment rehearsal can be run as one command:
+
+```bash
+ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=12 alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-rehearsal --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol ADAUSDT --notional 8 --stop-offset-pct 0.05 --i-understand-testnet-order'
+```
+
+This command opens a protected testnet position, runs read-only reconciliation,
+restarts `xsignal-vpe-testnet-stream-daemon.service`, reconciles again, closes
+the rehearsal position through the audited reduce-only path, and runs a final
+read-only reconciliation. A healthy report has top-level `"status": "OK"`,
+`protected_reconcile.error_count = 0`, `post_restart_reconcile.error_count = 0`,
+`close.final_position_amount = 0`, and `final_reconcile.error_count = 0`.
+
 ## Deployment To Alpha
 
 From the active worktree:
