@@ -148,6 +148,7 @@ class LiveStore:
             "active_stop_client_order_id": "text",
             "last_decision_open_time": "text",
             "strategy_interval": "text",
+            "last_stop_replace_at": "text",
         }.items():
             if name not in columns:
                 self.connection.execute(f"alter table positions add column {name} {definition}")

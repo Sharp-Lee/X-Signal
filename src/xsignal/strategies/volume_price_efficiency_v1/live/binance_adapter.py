@@ -286,6 +286,21 @@ class BinanceUsdFuturesTestnetBroker:
             },
         )
 
+    def start_user_data_stream(self) -> str:
+        payload = self.rest_client.request("POST", "/fapi/v1/listenKey")
+        listen_key = payload.get("listenKey")
+        if not listen_key:
+            raise ValueError("Binance listenKey response is missing listenKey")
+        return str(listen_key)
+
+    def keepalive_user_data_stream(self, listen_key: str) -> dict[str, Any]:
+        _ = listen_key
+        return self.rest_client.request("PUT", "/fapi/v1/listenKey")
+
+    def close_user_data_stream(self, listen_key: str) -> dict[str, Any]:
+        _ = listen_key
+        return self.rest_client.request("DELETE", "/fapi/v1/listenKey")
+
 
 def _format_decimal(value) -> str:
     return format_decimal(value)

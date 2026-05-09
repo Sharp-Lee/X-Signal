@@ -293,6 +293,12 @@ BINANCE_API_KEY=...
 BINANCE_SECRET_KEY=...
 ```
 
+On servers, pass the managed testnet environment file explicitly:
+
+```bash
+--env-file /etc/xsignal/binance-testnet.env
+```
+
 Run a read-only testnet smoke check:
 
 ```bash
@@ -369,6 +375,7 @@ Restart reconciliation for the testnet path is now available:
 ```bash
 xsignal-vpe-live testnet-reconcile \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol BTCUSDT
 ```
 
@@ -385,6 +392,7 @@ strategy stop:
 ```bash
 xsignal-vpe-live testnet-reconcile \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol BTCUSDT \
   --repair \
   --i-understand-testnet-order
@@ -395,15 +403,88 @@ are marked `ERROR_LOCKED` for manual inspection. Production trading remains
 disabled until the same reconciliation guarantees are wired into the long-running
 service loop.
 
+For repeatable testnet rehearsals, use the protected-position commands instead
+of ad hoc scripts. Opening a protected rehearsal position persists the local
+position and deterministic order intents before submitting the entry and
+protective stop:
+
+```bash
+xsignal-vpe-live testnet-open-protected \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol SOLUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+Closing a protected rehearsal position cancels the strategy stop, persists a
+reduce-only close intent, submits the reduce-only market close, verifies the
+symbol is flat, and marks the local position closed:
+
+```bash
+xsignal-vpe-live testnet-close-protected \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol SOLUSDT \
+  --position-id SOLUSDT-1 \
+  --i-understand-testnet-order
+```
+
+Both commands are testnet-only and require the explicit acknowledgement flag
+because they change Binance testnet account state.
+
+Run the full deployment rehearsal in one command:
+
+```bash
+xsignal-vpe-live testnet-rehearsal \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol ADAUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+This command opens a protected testnet position, runs read-only reconciliation,
+restarts the testnet stream daemon, reconciles again, closes the rehearsal
+position through the audited reduce-only path, and runs a final read-only
+reconciliation. It returns non-zero if any reconciliation step reports an error
+or the close verification is not flat.
+
+For deployment gating, run the verify wrapper:
+
+```bash
+xsignal-vpe-live testnet-deploy-verify \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol ADAUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+It checks pre-deploy status first and skips testnet order submission when the
+daemon is already unhealthy. When pre-status is clean, it runs
+`testnet-rehearsal`, collects final status, checks recent journal health, and
+returns non-zero unless the whole deployment gate is clean.
+
 ## VPE Automatic Live Cycle
 
-The preferred automatic runner is the realtime WebSocket daemon. It subscribes
-only to each selected `TRADING` USDT perpetual symbol's `1m` kline stream, then
-locally aggregates the configured signal intervals. Signals are screened only
-when a locally aggregated bar is complete; open positions are maintained from
-the realtime `1m` high plus latest close price. Trailing stops and pyramid-add
-triggers use those forming `1m` updates, while entries still require a closed
-signal bar.
+The preferred automatic runner is the realtime WebSocket daemon. In steady
+state it uses full-universe `1m` kline WebSocket streams for every selected
+`TRADING` USDT perpetual symbol, then locally aggregates the configured signal
+intervals. REST kline calls are recovery-only: startup and reconnect gap
+recovery read persisted `1m` cursors, fetch missing closed `1m` bars, and replay
+them through the same local pipeline. Signals are screened only when a locally
+aggregated bar is complete.
+
+Unclosed `1m` updates are memory-only. They are not persisted as market bars;
+only symbols with active strategy positions consume them for trailing-stop and
+pyramid-add maintenance. Closed `1m` bars are batch-written to SQLite and then
+aggregated into the configured signal intervals. This keeps the WebSocket read
+path separate from the exchange order path and prevents full-market market data
+from competing with entry, stop-replacement, and reconciliation REST calls.
 
 Run the testnet daemon locally:
 
@@ -422,10 +503,31 @@ Any Binance USD-M kline interval is accepted, including `1m`, `3m`, `5m`,
 `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, and
 `1M`.
 
-On startup and before every WebSocket reconnect, the daemon reads the persisted
-`1m` cursor for each symbol, fetches any missing closed `1m` bars through REST,
-stores them locally, and replays them through the local aggregator. On the very
-first run for a symbol, no historical `1m` gap is fetched; the REST-seeded
+WebSocket streams are chunked by `--max-streams`; the default is `200`, so the
+current full USDT perpetual universe runs in a few combined-stream connections
+instead of one large socket or dozens of tiny sockets. Each connection is
+proactively rotated before Binance's 24-hour hard disconnect: by default the
+daemon reconnects after 23 hours with up to 30 minutes of deterministic jitter
+per stream chunk. A `stream_rotation_due` log line is therefore expected daily.
+
+The daemon also opens one Binance user data WebSocket by default. This private
+stream consumes `ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE` events for the same
+strategy-owned `XV1...` client order ids persisted before submission. Stop fills
+close the matching local position immediately, stop cancellations resolve the
+old stop intent without error-locking the position, and account position updates
+sync local quantity/entry price after fills. The listen key is kept alive every
+30 minutes by default. Operators can pass `--disable-user-data-stream` for a
+market-data-only rehearsal, or adjust the keepalive cadence with
+`--user-data-keepalive-interval-seconds`.
+
+On startup and before every WebSocket reconnect, gap recovery is limited to
+symbols with active strategy positions. For those symbols, the daemon reads the
+persisted `1m` cursor, fetches any missing closed `1m` bars through REST, stores
+them locally, and replays them through the local aggregator so trailing-stop and
+pyramid state can be safely maintained. Symbols without active positions are
+treated like a fresh start: the daemon does not chase missed historical signals
+or backfill their downtime gap before opening the full-universe WebSocket. On
+the very first run for a symbol, no historical `1m` gap is fetched; the REST-seeded
 closed `1h`/`4h`/`1d` buffers provide initial signal context, and local `1m`
 retention begins from that startup point. Recovered historical bars update
 buffers and protective position state, but they do not open delayed entries or
@@ -514,3 +616,9 @@ daily timer is intended only as a fallback/manual one-shot runner. The live
 service includes `ConditionPathExists=/etc/xsignal/enable-live-trading`, so
 installing the live unit files does not enable live order submission unless the
 operator deliberately creates that file and provides production API keys.
+
+For alpha operations, rehearsals, and incident checks, use the runbook:
+
+```text
+docs/operations/vpe-live-runbook.md
+```

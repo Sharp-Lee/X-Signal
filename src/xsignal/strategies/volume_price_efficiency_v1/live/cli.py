@@ -36,11 +36,18 @@ from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
+    close_rehearsal_position,
+    open_protected_rehearsal_position,
+    run_testnet_deploy_verify,
+    run_testnet_rehearsal,
+)
 
 
 LOCAL_TESTNET_ENV_FILE = Path(".secrets/binance-testnet.env")
 LOCAL_LIVE_ENV_FILE = Path(".secrets/binance-live.env")
 SYSTEM_LIVE_ENABLE_FILE = Path("/etc/xsignal/enable-live-trading")
+DEFAULT_TESTNET_STREAM_SERVICE = "xsignal-vpe-testnet-stream-daemon.service"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,19 +70,57 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--symbol", required=True)
     smoke.add_argument("--quantity", type=float, default=0.001)
     smoke.add_argument("--submit-test-order", action="store_true")
+    smoke.add_argument("--env-file", type=Path)
 
     lifecycle = subparsers.add_parser("testnet-lifecycle")
     lifecycle.add_argument("--symbol", required=True)
     lifecycle.add_argument("--quantity", type=float, default=0.001)
     lifecycle.add_argument("--stop-offset-pct", type=float, default=0.05)
     lifecycle.add_argument("--db", type=Path)
+    lifecycle.add_argument("--env-file", type=Path)
     lifecycle.add_argument("--i-understand-testnet-order", action="store_true")
 
     testnet_reconcile = subparsers.add_parser("testnet-reconcile")
     testnet_reconcile.add_argument("--db", type=Path, required=True)
     testnet_reconcile.add_argument("--symbol", action="append", required=True)
     testnet_reconcile.add_argument("--repair", action="store_true")
+    testnet_reconcile.add_argument("--env-file", type=Path)
     testnet_reconcile.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_open = subparsers.add_parser("testnet-open-protected")
+    testnet_open.add_argument("--db", type=Path, required=True)
+    testnet_open.add_argument("--symbol", required=True)
+    testnet_open.add_argument("--notional", type=float, required=True)
+    testnet_open.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_open.add_argument("--env-file", type=Path)
+    testnet_open.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_close = subparsers.add_parser("testnet-close-protected")
+    testnet_close.add_argument("--db", type=Path, required=True)
+    testnet_close.add_argument("--symbol", required=True)
+    testnet_close.add_argument("--position-id")
+    testnet_close.add_argument("--env-file", type=Path)
+    testnet_close.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_rehearsal = subparsers.add_parser("testnet-rehearsal")
+    testnet_rehearsal.add_argument("--db", type=Path, required=True)
+    testnet_rehearsal.add_argument("--symbol", required=True)
+    testnet_rehearsal.add_argument("--notional", type=float, required=True)
+    testnet_rehearsal.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_rehearsal.add_argument("--env-file", type=Path)
+    testnet_rehearsal.add_argument("--service-name", default=DEFAULT_TESTNET_STREAM_SERVICE)
+    testnet_rehearsal.add_argument("--skip-restart", action="store_true")
+    testnet_rehearsal.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_deploy_verify = subparsers.add_parser("testnet-deploy-verify")
+    testnet_deploy_verify.add_argument("--db", type=Path, required=True)
+    testnet_deploy_verify.add_argument("--symbol", required=True)
+    testnet_deploy_verify.add_argument("--notional", type=float, required=True)
+    testnet_deploy_verify.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_deploy_verify.add_argument("--env-file", type=Path)
+    testnet_deploy_verify.add_argument("--service-name", default=DEFAULT_TESTNET_STREAM_SERVICE)
+    testnet_deploy_verify.add_argument("--skip-restart", action="store_true")
+    testnet_deploy_verify.add_argument("--i-understand-testnet-order", action="store_true")
 
     run_cycle = subparsers.add_parser("run-cycle")
     run_cycle.add_argument("--mode", choices=["testnet", "live"], required=True)
@@ -92,12 +137,17 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--interval", action="append", default=[])
     stream_daemon.add_argument("--max-symbols", type=int)
     stream_daemon.add_argument("--max-streams", type=int)
+    stream_daemon.add_argument("--stream-max-lifetime-seconds", type=float)
+    stream_daemon.add_argument("--stream-rotation-jitter-seconds", type=float)
     stream_daemon.add_argument("--lookback-bars", type=int, default=120)
     stream_daemon.add_argument("--seed-sleep-ms", type=int, default=20)
     stream_daemon.add_argument("--recovery-sleep-ms", type=int, default=500)
     stream_daemon.add_argument("--closed-poll-sleep-ms", type=int, default=25)
     stream_daemon.add_argument("--closed-poll-grace-seconds", type=float, default=2.0)
+    stream_daemon.add_argument("--closed-poll-fetch-limit", type=int, default=99)
     stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
+    stream_daemon.add_argument("--disable-user-data-stream", action="store_true")
+    stream_daemon.add_argument("--user-data-keepalive-interval-seconds", type=float, default=1800.0)
     stream_daemon.add_argument("--env-file", type=Path)
     stream_daemon.add_argument("--stop-after-events", type=int)
     stream_daemon.add_argument("--i-understand-live-order", action="store_true")
@@ -155,10 +205,11 @@ def run_testnet_smoke(
     symbol: str,
     submit_test_order: bool,
     quantity: float,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
 ) -> int:
-    rest_client = rest_client or _build_testnet_rest_client()
+    rest_client = rest_client or _build_testnet_rest_client(env_file=env_file)
     if rest_client is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-smoke",
@@ -214,6 +265,7 @@ def run_testnet_lifecycle_command(
     stop_offset_pct: float,
     acknowledge: bool,
     db: Path | None = None,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     lifecycle_runner=run_testnet_lifecycle,
@@ -224,7 +276,9 @@ def run_testnet_lifecycle_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-lifecycle",
@@ -262,6 +316,7 @@ def run_testnet_reconcile_command(
     symbols: list[str],
     repair: bool,
     acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     reconcile_runner=run_reconciliation_pass,
@@ -272,7 +327,9 @@ def run_testnet_reconcile_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-reconcile",
@@ -292,6 +349,181 @@ def run_testnet_reconcile_command(
     )
     print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
     return 1 if summary.error_count else 0
+
+
+def run_testnet_open_protected_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=open_protected_rehearsal_position,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-open-protected requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-open-protected",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+    )
+    print(json.dumps(vars(result), indent=2, sort_keys=True))
+    return 0
+
+
+def run_testnet_close_protected_command(
+    *,
+    db: Path,
+    symbol: str,
+    position_id: str | None,
+    acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=close_rehearsal_position,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-close-protected requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-close-protected",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        position_id=position_id,
+    )
+    print(json.dumps(vars(result), indent=2, sort_keys=True))
+    return 0
+
+
+def run_testnet_rehearsal_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    env_file: Path | None,
+    service_name: str,
+    skip_restart: bool,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=run_testnet_rehearsal,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-rehearsal requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-rehearsal",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        service_name=service_name,
+        restart_service=not skip_restart,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0 if result.status == "OK" else 1
+
+
+def run_testnet_deploy_verify_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    env_file: Path | None,
+    service_name: str,
+    skip_restart: bool,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    verify_runner=run_testnet_deploy_verify,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-deploy-verify requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-deploy-verify",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = verify_runner(
+        store=store,
+        db_path=db,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        service_name=service_name,
+        restart_service=not skip_restart,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0 if result.status == "OK" else 1
 
 
 def run_status_command(
@@ -443,9 +675,14 @@ def run_stream_daemon_command(
     recovery_sleep_ms: int = 500,
     closed_poll_sleep_ms: int = 25,
     closed_poll_grace_seconds: float = 2.0,
+    closed_poll_fetch_limit: int = 99,
     reconcile_interval_seconds: float = 300.0,
     stop_after_events: int | None = None,
     max_streams: int | None = None,
+    stream_max_lifetime_seconds: float | None = None,
+    stream_rotation_jitter_seconds: float | None = None,
+    enable_user_data_stream: bool = True,
+    user_data_keepalive_interval_seconds: float = 1800.0,
     credentials=None,
     daemon_runner=run_stream_daemon,
 ) -> int:
@@ -471,12 +708,25 @@ def run_stream_daemon_command(
         lookback_bars=lookback_bars,
         max_symbols=max_symbols,
         **({"max_streams": max_streams} if max_streams is not None else {}),
+        **(
+            {"stream_max_lifetime_seconds": stream_max_lifetime_seconds}
+            if stream_max_lifetime_seconds is not None
+            else {}
+        ),
+        **(
+            {"stream_rotation_jitter_seconds": stream_rotation_jitter_seconds}
+            if stream_rotation_jitter_seconds is not None
+            else {}
+        ),
         seed_sleep_ms=seed_sleep_ms,
         recovery_sleep_ms=recovery_sleep_ms,
         closed_poll_sleep_ms=closed_poll_sleep_ms,
         closed_poll_grace_seconds=closed_poll_grace_seconds,
+        closed_poll_fetch_limit=closed_poll_fetch_limit,
         reconcile_interval_seconds=reconcile_interval_seconds,
         stop_after_events=stop_after_events,
+        enable_user_data_stream=enable_user_data_stream,
+        user_data_keepalive_interval_seconds=user_data_keepalive_interval_seconds,
     )
     return daemon_runner(config=config, credentials=credentials)
 
@@ -489,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             submit_test_order=args.submit_test_order,
             quantity=args.quantity,
+            env_file=args.env_file,
         )
     if args.command == "testnet-lifecycle":
         return run_testnet_lifecycle_command(
@@ -497,12 +748,53 @@ def main(argv: list[str] | None = None) -> int:
             stop_offset_pct=args.stop_offset_pct,
             acknowledge=args.i_understand_testnet_order,
             db=args.db,
+            env_file=args.env_file,
         )
     if args.command == "testnet-reconcile":
         return run_testnet_reconcile_command(
             db=args.db,
             symbols=args.symbol,
             repair=args.repair,
+            acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
+        )
+    if args.command == "testnet-open-protected":
+        return run_testnet_open_protected_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
+        )
+    if args.command == "testnet-close-protected":
+        return run_testnet_close_protected_command(
+            db=args.db,
+            symbol=args.symbol,
+            position_id=args.position_id,
+            acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
+        )
+    if args.command == "testnet-rehearsal":
+        return run_testnet_rehearsal_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            env_file=args.env_file,
+            service_name=args.service_name,
+            skip_restart=args.skip_restart,
+            acknowledge=args.i_understand_testnet_order,
+        )
+    if args.command == "testnet-deploy-verify":
+        return run_testnet_deploy_verify_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            env_file=args.env_file,
+            service_name=args.service_name,
+            skip_restart=args.skip_restart,
             acknowledge=args.i_understand_testnet_order,
         )
     if args.command == "status":
@@ -534,9 +826,14 @@ def main(argv: list[str] | None = None) -> int:
             recovery_sleep_ms=args.recovery_sleep_ms,
             closed_poll_sleep_ms=args.closed_poll_sleep_ms,
             closed_poll_grace_seconds=args.closed_poll_grace_seconds,
+            closed_poll_fetch_limit=args.closed_poll_fetch_limit,
             reconcile_interval_seconds=args.reconcile_interval_seconds,
             stop_after_events=args.stop_after_events,
             max_streams=args.max_streams,
+            stream_max_lifetime_seconds=args.stream_max_lifetime_seconds,
+            stream_rotation_jitter_seconds=args.stream_rotation_jitter_seconds,
+            enable_user_data_stream=not args.disable_user_data_stream,
+            user_data_keepalive_interval_seconds=args.user_data_keepalive_interval_seconds,
         )
     if args.command == "live-smoke":
         return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)

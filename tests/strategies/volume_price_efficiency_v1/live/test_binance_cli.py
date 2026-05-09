@@ -156,6 +156,97 @@ def test_cli_has_guarded_testnet_reconcile_command(tmp_path):
     assert not args.i_understand_testnet_order
 
 
+def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
+    parser = cli.build_parser()
+    subcommands = parser._subparsers._group_actions[0].choices
+    open_args = parser.parse_args(
+        [
+            "testnet-open-protected",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "SOLUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+        ]
+    )
+    close_args = parser.parse_args(
+        [
+            "testnet-close-protected",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "SOLUSDT",
+            "--position-id",
+            "SOLUSDT-1",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+        ]
+    )
+    rehearsal_args = parser.parse_args(
+        [
+            "testnet-rehearsal",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "ADAUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+            "--service-name",
+            "xsignal-vpe-testnet-stream-daemon.service",
+        ]
+    )
+    deploy_verify_args = parser.parse_args(
+        [
+            "testnet-deploy-verify",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "ADAUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+        ]
+    )
+
+    assert "testnet-open-protected" in subcommands
+    assert "testnet-close-protected" in subcommands
+    assert "testnet-rehearsal" in subcommands
+    assert "testnet-deploy-verify" in subcommands
+    assert open_args.command == "testnet-open-protected"
+    assert open_args.db == tmp_path / "live.sqlite"
+    assert open_args.symbol == "SOLUSDT"
+    assert open_args.notional == 8.0
+    assert open_args.stop_offset_pct == 0.05
+    assert open_args.env_file == tmp_path / "binance-testnet.env"
+    assert not open_args.i_understand_testnet_order
+    assert close_args.command == "testnet-close-protected"
+    assert close_args.position_id == "SOLUSDT-1"
+    assert close_args.env_file == tmp_path / "binance-testnet.env"
+    assert not close_args.i_understand_testnet_order
+    assert rehearsal_args.command == "testnet-rehearsal"
+    assert rehearsal_args.symbol == "ADAUSDT"
+    assert rehearsal_args.notional == 8.0
+    assert rehearsal_args.service_name == "xsignal-vpe-testnet-stream-daemon.service"
+    assert not rehearsal_args.skip_restart
+    assert not rehearsal_args.i_understand_testnet_order
+    assert deploy_verify_args.command == "testnet-deploy-verify"
+    assert deploy_verify_args.symbol == "ADAUSDT"
+    assert deploy_verify_args.notional == 8.0
+    assert not deploy_verify_args.i_understand_testnet_order
+
+
 def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
     parser = cli.build_parser()
     subcommands = parser._subparsers._group_actions[0].choices
@@ -203,12 +294,21 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "10",
             "--max-streams",
             "200",
+            "--stream-max-lifetime-seconds",
+            "82800",
+            "--stream-rotation-jitter-seconds",
+            "1800",
             "--recovery-sleep-ms",
             "150",
             "--closed-poll-sleep-ms",
             "30",
             "--closed-poll-grace-seconds",
             "3.5",
+            "--closed-poll-fetch-limit",
+            "7",
+            "--user-data-keepalive-interval-seconds",
+            "1200",
+            "--disable-user-data-stream",
             "--stop-after-events",
             "3",
         ]
@@ -221,9 +321,14 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.interval == ["1h", "4h"]
     assert args.max_symbols == 10
     assert args.max_streams == 200
+    assert args.stream_max_lifetime_seconds == 82800
+    assert args.stream_rotation_jitter_seconds == 1800
     assert args.recovery_sleep_ms == 150
     assert args.closed_poll_sleep_ms == 30
     assert args.closed_poll_grace_seconds == 3.5
+    assert args.closed_poll_fetch_limit == 7
+    assert args.user_data_keepalive_interval_seconds == 1200
+    assert args.disable_user_data_stream
     assert args.stop_after_events == 3
 
 
@@ -407,6 +512,264 @@ def test_testnet_reconcile_runs_runner_and_prints_summary(tmp_path, capsys):
     assert "secret" not in captured.out.lower()
 
 
+def test_testnet_open_protected_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_close_protected_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_close_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        position_id=None,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_rehearsal_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_rehearsal_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=False,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_deploy_verify_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_deploy_verify_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=False,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_open_protected_runs_runner_and_prints_result(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="SOLUSDT",
+            position_id="SOLUSDT-1",
+            quantity=0.08,
+            requested_notional=8.0,
+            effective_notional=8.0,
+            entry_price=100.0,
+            stop_offset_pct=0.05,
+            stop_price=95.0,
+            entry_client_order_id="XV1TE...",
+            stop_client_order_id="XV1TS...",
+        )
+
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["symbol"] == "SOLUSDT"
+    assert calls[0]["store"] is not None
+    assert '"position_id": "SOLUSDT-1"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_open_protected_uses_explicit_env_file(tmp_path, monkeypatch, capsys):
+    env_file = tmp_path / "binance-testnet.env"
+    fake_rest = object()
+    build_calls = []
+    runner_calls = []
+
+    def fake_build_testnet_rest_client(*, env_file=None):
+        build_calls.append(env_file)
+        return fake_rest
+
+    def fake_runner(**kwargs):
+        runner_calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="ADAUSDT",
+            position_id="ADAUSDT-1",
+            quantity=10.0,
+            requested_notional=8.0,
+            effective_notional=8.0,
+            entry_price=0.8,
+            stop_offset_pct=0.05,
+            stop_price=0.76,
+            entry_client_order_id="XV1TE...",
+            stop_client_order_id="XV1TS...",
+        )
+
+    monkeypatch.setattr(cli, "_build_testnet_rest_client", fake_build_testnet_rest_client)
+
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=env_file,
+        acknowledge=True,
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert build_calls == [env_file]
+    assert runner_calls[0]["broker"].rest_client is fake_rest
+    assert '"symbol": "ADAUSDT"' in captured.out
+
+
+def test_testnet_close_protected_runs_runner_and_prints_result(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="SOLUSDT",
+            position_id="SOLUSDT-1",
+            quantity=0.08,
+            canceled_stop_client_order_id="XV1TS...",
+            close_client_order_id="XV1TM...",
+            final_position_amount=0.0,
+        )
+
+    result = cli.run_testnet_close_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        position_id="SOLUSDT-1",
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["position_id"] == "SOLUSDT-1"
+    assert calls[0]["store"] is not None
+    assert '"final_position_amount": 0.0' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_rehearsal_runs_runner_and_returns_nonzero_on_reconcile_error(
+    tmp_path,
+    capsys,
+):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="ERROR",
+            open=SimpleNamespace(position_id="ADAUSDT-1"),
+            protected_reconcile=SimpleNamespace(error_count=1),
+            restart={"status": "SKIPPED"},
+            close=SimpleNamespace(final_position_amount=0.0),
+            final_reconcile=SimpleNamespace(error_count=0),
+            to_dict=lambda: {
+                "status": "ERROR",
+                "open": {"position_id": "ADAUSDT-1"},
+                "protected_reconcile": {"error_count": 1},
+                "restart": {"status": "SKIPPED"},
+                "close": {"final_position_amount": 0.0},
+                "final_reconcile": {"error_count": 0},
+            },
+        )
+
+    result = cli.run_testnet_rehearsal_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=True,
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls[0]["restart_service"] is False
+    assert calls[0]["service_name"] == "svc"
+    assert '"status": "ERROR"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_deploy_verify_runs_runner_and_returns_nonzero_on_error(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="ERROR",
+            to_dict=lambda: {
+                "status": "ERROR",
+                "checks": {"pre_status_ok": False},
+                "errors": ["pre_status_not_ok"],
+            },
+        )
+
+    result = cli.run_testnet_deploy_verify_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=True,
+        acknowledge=True,
+        broker=object(),
+        verify_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls[0]["restart_service"] is False
+    assert calls[0]["service_name"] == "svc"
+    assert calls[0]["db_path"] == tmp_path / "live.sqlite"
+    assert '"pre_status_not_ok"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
 def test_run_cycle_refuses_live_without_ack_and_enable_file(tmp_path, capsys):
     result = cli.run_live_cycle_command(
         mode="live",
@@ -460,8 +823,13 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
         acknowledge_live=False,
         live_enabled=False,
         max_streams=200,
+        stream_max_lifetime_seconds=82800,
+        stream_rotation_jitter_seconds=1800,
         closed_poll_sleep_ms=30,
         closed_poll_grace_seconds=3.5,
+        closed_poll_fetch_limit=7,
+        user_data_keepalive_interval_seconds=1200,
+        enable_user_data_stream=False,
         credentials=object(),
         daemon_runner=fake_runner,
     )
@@ -471,8 +839,13 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
     assert calls[0]["config"].db_path == tmp_path / "stream.sqlite"
     assert calls[0]["config"].intervals == ("1h", "4h")
     assert calls[0]["config"].max_streams == 200
+    assert calls[0]["config"].stream_max_lifetime_seconds == 82800
+    assert calls[0]["config"].stream_rotation_jitter_seconds == 1800
     assert calls[0]["config"].closed_poll_sleep_ms == 30
     assert calls[0]["config"].closed_poll_grace_seconds == 3.5
+    assert calls[0]["config"].closed_poll_fetch_limit == 7
+    assert calls[0]["config"].user_data_keepalive_interval_seconds == 1200
+    assert calls[0]["config"].enable_user_data_stream is False
     assert calls[0]["credentials"] is not None
 
 

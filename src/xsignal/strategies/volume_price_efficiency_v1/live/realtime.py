@@ -183,6 +183,36 @@ class RealtimeStrategyService:
             adds=adds,
         )
 
+    def process_closed_bar_batch(
+        self,
+        events: list[KlineStreamEvent],
+        *,
+        allow_entry: bool = True,
+        allow_pyramid_add: bool = True,
+        allow_stop_replace: bool = True,
+    ) -> RealtimeEventResult:
+        entries = 0
+        stop_updates = 0
+        adds = 0
+        checked = False
+        for event in events:
+            result = self.process_closed_bar(
+                event,
+                allow_entry=allow_entry,
+                allow_pyramid_add=allow_pyramid_add,
+                allow_stop_replace=allow_stop_replace,
+            )
+            checked = checked or result.closed_signal_checked
+            entries += result.entries
+            stop_updates += result.stop_updates
+            adds += result.adds
+        return RealtimeEventResult(
+            closed_signal_checked=checked,
+            entries=entries,
+            stop_updates=stop_updates,
+            adds=adds,
+        )
+
     def _maintain_symbol_position(
         self,
         *,
@@ -278,7 +308,12 @@ class RealtimeStrategyService:
                 normalized_stop = float(SymbolRules.from_metadata(metadata).normalize_price(candidate_stop))
             except ValueError:
                 normalized_stop = None
-            if normalized_stop is not None:
+            if normalized_stop is not None and self._should_replace_trailing_stop(
+                record=updated_record,
+                candidate_stop_price=normalized_stop,
+                metadata=metadata,
+                now=now,
+            ):
                 replaced = replace_trailing_stop(
                     store=self.store,
                     broker=self.broker,
@@ -324,6 +359,32 @@ class RealtimeStrategyService:
                 )
                 adds += 1
         return updated_record, stop_updates, adds
+
+    def _should_replace_trailing_stop(
+        self,
+        *,
+        record: LivePositionRecord,
+        candidate_stop_price: float,
+        metadata: SymbolMetadata,
+        now: datetime,
+    ) -> bool:
+        if record.stop_price is not None:
+            improvement = candidate_stop_price - record.stop_price
+            if improvement < self._minimum_stop_improvement(record.stop_price, metadata):
+                return False
+        if (
+            record.last_stop_replace_at is not None
+            and self.config.stop_replace_min_interval_seconds > 0
+        ):
+            elapsed = (now - record.last_stop_replace_at).total_seconds()
+            if elapsed < self.config.stop_replace_min_interval_seconds:
+                return False
+        return True
+
+    def _minimum_stop_improvement(self, current_stop_price: float, metadata: SymbolMetadata) -> float:
+        tick_gate = metadata.price_tick * self.config.stop_replace_min_improvement_ticks
+        fraction_gate = current_stop_price * self.config.stop_replace_min_improvement_fraction
+        return max(tick_gate, fraction_gate)
 
     def _latest_atr_for_symbol(self, *, interval: str, symbol: str) -> float | None:
         buffer = self.buffers.get(interval)

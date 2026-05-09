@@ -385,6 +385,29 @@ def test_broker_market_sell_reduce_only_closes_existing_position():
     ]
 
 
+def test_broker_manages_user_data_listen_key():
+    class ListenKeyRestClient(FakeRestClient):
+        def request(self, method, path, *, signed=False, params=None):
+            super().request(method, path, signed=signed, params=params)
+            if method == "POST" and path == "/fapi/v1/listenKey":
+                return {"listenKey": "abc-listen-key"}
+            return {}
+
+    rest_client = ListenKeyRestClient()
+    broker = BinanceUsdFuturesTestnetBroker(rest_client)
+
+    listen_key = broker.start_user_data_stream()
+    broker.keepalive_user_data_stream(listen_key)
+    broker.close_user_data_stream(listen_key)
+
+    assert listen_key == "abc-listen-key"
+    assert rest_client.calls == [
+        ("POST", "/fapi/v1/listenKey", False, {}),
+        ("PUT", "/fapi/v1/listenKey", False, {}),
+        ("DELETE", "/fapi/v1/listenKey", False, {}),
+    ]
+
+
 def test_broker_builds_account_snapshot_from_live_account_and_positions():
     class AccountRestClient(FakeRestClient):
         def request(self, method, path, *, signed=False, params=None):

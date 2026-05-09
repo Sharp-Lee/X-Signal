@@ -29,6 +29,9 @@ class LiveTradingConfig(BaseModel):
     max_daily_realized_loss: float = 50.0
     min_quote_notional: float = 5.0
     atr_multiplier: float = 3.0
+    stop_replace_min_interval_seconds: float = 30.0
+    stop_replace_min_improvement_ticks: int = 10
+    stop_replace_min_improvement_fraction: float = 0.0001
     pyramid_add_step_atr: float = 1.0
     pyramid_max_adds: int = 1
     market_regime_lookback_bars: int = 30
@@ -62,6 +65,12 @@ class LiveTradingConfig(BaseModel):
             raise ValueError("min_quote_notional must be positive")
         if self.atr_multiplier <= 0.0:
             raise ValueError("atr_multiplier must be positive")
+        if self.stop_replace_min_interval_seconds < 0.0:
+            raise ValueError("stop_replace_min_interval_seconds must be non-negative")
+        if self.stop_replace_min_improvement_ticks < 0:
+            raise ValueError("stop_replace_min_improvement_ticks must be non-negative")
+        if self.stop_replace_min_improvement_fraction < 0.0:
+            raise ValueError("stop_replace_min_improvement_fraction must be non-negative")
         if self.pyramid_add_step_atr <= 0.0:
             raise ValueError("pyramid_add_step_atr must be positive")
         if self.pyramid_max_adds != 1:

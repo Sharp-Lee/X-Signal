@@ -257,6 +257,36 @@ May 09 21:11:41 host xsignal-vpe-live[2]: {"event": "stream_connected", "url": "
     assert summary["rest_429_since_clean"] == 0
 
 
+def test_status_warns_on_recent_user_data_stream_errors(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    journal = parse_journal_summary(
+        """
+May 09 21:06:39 host systemd[1]: Started xsignal-vpe-testnet-stream-daemon.service - X-Signal VPE testnet realtime WebSocket trading daemon.
+May 09 21:06:40 host xsignal-vpe-live[2]: {"entry_gate": {"allow_entries": true, "reasons": []}, "errors": 0, "event": "reconcile_pass", "status": "clean"}
+May 09 21:06:41 host xsignal-vpe-live[2]: {"event": "user_data_stream_error", "error": "listen key denied"}
+        """
+    )
+
+    snapshot = build_status_snapshot(
+        db_path=tmp_path / "live.sqlite",
+        now=NOW,
+        system_snapshot={
+            "service_active": True,
+            "live_service_active": False,
+            "live_guard_present": False,
+            "revision": "abc123",
+            "sockets": [],
+            "journal": journal,
+        },
+    )
+
+    assert journal["user_data_stream_errors"] == 1
+    assert journal["user_data_stream_errors_since_clean"] == 1
+    assert snapshot["overall"] == "WARN"
+    assert "recent_user_data_stream_errors" in snapshot["warnings"]
+
+
 def test_collect_system_snapshot_degrades_when_system_commands_are_unavailable(tmp_path):
     def missing_runner(*args, **kwargs):
         raise FileNotFoundError("systemctl")

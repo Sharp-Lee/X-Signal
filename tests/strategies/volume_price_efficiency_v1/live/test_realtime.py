@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import numpy as np
@@ -359,6 +359,158 @@ def test_price_event_falls_back_to_entry_atr_when_buffers_are_warming(tmp_path):
     assert get_live_position(store, position_id).stop_price == 95.0
 
 
+def test_price_event_updates_highest_high_without_replacing_stop_during_cooldown(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
+    update_live_position(
+        store,
+        LivePositionRecord(
+            position_id=position_id,
+            symbol="BTCUSDT",
+            state=PositionState.OPEN,
+            entry_price=100.0,
+            quantity=0.1,
+            highest_high=110.0,
+            stop_price=95.0,
+            atr_at_entry=5.0,
+            next_add_trigger=None,
+            add_count=0,
+            active_stop_client_order_id="old-stop",
+            last_decision_open_time=None,
+            strategy_interval="4h",
+            last_stop_replace_at=NOW,
+        ),
+    )
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(stop_replace_min_interval_seconds=30.0),
+        environment="testnet",
+        buffers={},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW + timedelta(seconds=10),
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, False),
+    )
+
+    result = service.process_price_event(
+        _event(closed=False, interval="1m", high=111.0, close=111.0),
+        allow_pyramid_add=False,
+    )
+
+    position = get_live_position(store, position_id)
+    assert result.stop_updates == 0
+    assert position.highest_high == 111.0
+    assert position.stop_price == 95.0
+    assert position.last_stop_replace_at == NOW
+    assert not broker.calls
+
+
+def test_price_event_replaces_stop_after_cooldown_when_improvement_is_large_enough(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
+    update_live_position(
+        store,
+        LivePositionRecord(
+            position_id=position_id,
+            symbol="BTCUSDT",
+            state=PositionState.OPEN,
+            entry_price=100.0,
+            quantity=0.1,
+            highest_high=110.0,
+            stop_price=95.0,
+            atr_at_entry=5.0,
+            next_add_trigger=None,
+            add_count=0,
+            active_stop_client_order_id="old-stop",
+            last_decision_open_time=None,
+            strategy_interval="4h",
+            last_stop_replace_at=NOW - timedelta(seconds=31),
+        ),
+    )
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(
+            stop_replace_min_interval_seconds=30.0,
+            stop_replace_min_improvement_ticks=10,
+        ),
+        environment="testnet",
+        buffers={},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, False),
+    )
+
+    result = service.process_price_event(
+        _event(closed=False, interval="1m", high=111.0, close=111.0),
+        allow_pyramid_add=False,
+    )
+
+    position = get_live_position(store, position_id)
+    assert result.stop_updates == 1
+    assert position.stop_price == 96.0
+    assert position.last_stop_replace_at == NOW
+    assert [call[0] for call in broker.calls] == ["cancel_order", "place_stop_market_close"]
+
+
+def test_price_event_skips_stop_replacement_when_improvement_is_below_tick_gate(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
+    update_live_position(
+        store,
+        LivePositionRecord(
+            position_id=position_id,
+            symbol="BTCUSDT",
+            state=PositionState.OPEN,
+            entry_price=100.0,
+            quantity=0.1,
+            highest_high=110.0,
+            stop_price=95.0,
+            atr_at_entry=5.0,
+            next_add_trigger=None,
+            add_count=0,
+            active_stop_client_order_id="old-stop",
+            last_decision_open_time=None,
+            strategy_interval="4h",
+            last_stop_replace_at=NOW - timedelta(minutes=5),
+        ),
+    )
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(
+            stop_replace_min_interval_seconds=30.0,
+            stop_replace_min_improvement_ticks=10,
+        ),
+        environment="testnet",
+        buffers={},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, False),
+    )
+
+    result = service.process_price_event(
+        _event(closed=False, interval="1m", high=110.5, close=110.5),
+        allow_pyramid_add=False,
+    )
+
+    position = get_live_position(store, position_id)
+    assert result.stop_updates == 0
+    assert position.highest_high == 110.5
+    assert position.stop_price == 95.0
+    assert position.last_stop_replace_at == NOW - timedelta(minutes=5)
+    assert not broker.calls
+
+
 def test_1m_price_event_can_update_highest_high_without_replacing_stop_during_recovery(tmp_path):
     store = LiveStore.open(tmp_path / "live.sqlite")
     store.initialize()
@@ -418,6 +570,30 @@ def test_closed_event_with_signal_opens_entry_and_protective_stop(tmp_path):
     position = store.list_positions_by_states([PositionState.OPEN])[0]
     assert position["symbol"] == "BTCUSDT"
     assert get_live_position(store, position["position_id"]).strategy_interval == "1h"
+
+
+def test_closed_bar_batch_runs_signal_checks_once_per_batch(tmp_path):
+    service, store, broker = _service(tmp_path, signal_value=True)
+    calls = []
+
+    def signal_mask(arrays, config):
+        calls.append(arrays.symbols)
+        return np.full(arrays.open.shape, True)
+
+    service.signal_mask_builder = signal_mask
+
+    result = service.process_closed_bar_batch(
+        [
+            _event(closed=True, high=110.0, close=106.0),
+        ],
+        allow_entry=True,
+        allow_pyramid_add=True,
+        allow_stop_replace=True,
+    )
+
+    assert result.entries == 1
+    assert calls == [("BTCUSDT",)]
+    assert [call[0] for call in broker.calls] == ["market_buy", "place_stop_market_close"]
 
 
 def test_closed_bar_can_update_buffer_without_opening_historical_entry(tmp_path):
