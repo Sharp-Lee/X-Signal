@@ -69,11 +69,14 @@ class RealtimeStrategyService:
         self.now_provider = now_provider
         self.feature_builder = feature_builder
         self.signal_mask_builder = signal_mask_builder
+        self._active_symbols = {record.symbol for record in list_active_live_positions(store)}
 
     def process_event(self, event: KlineStreamEvent) -> RealtimeEventResult:
         buffer = self.buffers.get(event.interval)
         if buffer is None:
             return RealtimeEventResult(False, skipped_reason="interval_not_configured")
+        if not event.is_closed and not self._has_active_symbol_position(event.symbol):
+            return RealtimeEventResult(False)
         if event.is_closed:
             buffer.apply_event(event)
         arrays = buffer.to_arrays()
@@ -112,7 +115,8 @@ class RealtimeStrategyService:
 
         if metadata is None:
             return RealtimeEventResult(True, stop_updates=stop_updates, adds=adds)
-        if any(record.symbol == event.symbol for record in list_active_live_positions(self.store)):
+        self._refresh_active_symbols()
+        if self._has_active_symbol_position(event.symbol):
             return RealtimeEventResult(True, stop_updates=stop_updates, adds=adds)
         signal_mask = self.signal_mask_builder(arrays, self.config)
         if not signal_mask[time_index, symbol_index]:
@@ -144,6 +148,8 @@ class RealtimeStrategyService:
         stop_updates = 0
         adds = 0
         active = [record for record in list_active_live_positions(self.store) if record.symbol == event.symbol]
+        if not active:
+            self._active_symbols.discard(event.symbol)
         for record in active:
             updated_record = replace(
                 record,
@@ -247,7 +253,14 @@ class RealtimeStrategyService:
             atr=atr,
             now=now,
         )
+        self._active_symbols.add(event.symbol)
         return True
+
+    def _has_active_symbol_position(self, symbol: str) -> bool:
+        return symbol in self._active_symbols
+
+    def _refresh_active_symbols(self) -> None:
+        self._active_symbols = {record.symbol for record in list_active_live_positions(self.store)}
 
 
 def _risk_accepted(

@@ -134,7 +134,9 @@ def _service(tmp_path, *, signal_value=False, account=None):
 
 
 def test_unclosed_event_can_move_stop_and_trigger_pyramid_add(tmp_path):
-    service, store, broker = _service(tmp_path)
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
     position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
     update_live_position(
         store,
@@ -152,6 +154,18 @@ def test_unclosed_event_can_move_stop_and_trigger_pyramid_add(tmp_path):
             active_stop_client_order_id="old-stop",
             last_decision_open_time=None,
         ),
+    )
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(),
+        environment="testnet",
+        buffers={"1h": _buffer()},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        feature_builder=lambda arrays: _features(arrays),
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, False),
     )
 
     result = service.process_event(_event(closed=False, high=110.0, close=106.0))
@@ -177,6 +191,32 @@ def test_unclosed_event_never_opens_new_entry_even_if_signal_mask_would_be_true(
     assert result.entries == 0
     assert not broker.calls
     assert store.list_positions_by_states([PositionState.OPEN]) == []
+
+
+def test_unclosed_event_without_active_position_does_not_compute_features(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(),
+        environment="testnet",
+        buffers={"1h": _buffer()},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        feature_builder=lambda arrays: (_ for _ in ()).throw(AssertionError("no features")),
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, True),
+    )
+
+    result = service.process_event(_event(closed=False, high=110.0, close=106.0))
+
+    assert result.closed_signal_checked is False
+    assert result.entries == 0
+    assert result.stop_updates == 0
+    assert result.adds == 0
+    assert not broker.calls
 
 
 def test_closed_event_with_signal_opens_entry_and_protective_stop(tmp_path):
