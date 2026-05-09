@@ -396,6 +396,31 @@ service loop.
 
 ## VPE Automatic Live Cycle
 
+The preferred automatic runner is the realtime WebSocket daemon. It subscribes
+to all selected `TRADING` USDT perpetual kline streams, screens signals only
+when Binance marks a kline closed, and maintains open positions from realtime
+unclosed kline updates. Trailing stops and pyramid-add triggers use the forming
+bar high plus latest close price; entries still require a closed-bar signal.
+
+Run the testnet daemon locally:
+
+```bash
+xsignal-vpe-live stream-daemon \
+  --mode testnet \
+  --db data/live/vpe-testnet.sqlite \
+  --interval 1h \
+  --interval 4h \
+  --interval 1d \
+  --lookback-bars 120
+```
+
+If `--interval` is omitted, the daemon defaults to `1h`, `4h`, and `1d`.
+Any Binance USD-M kline interval is accepted, including `1m`, `3m`, `5m`,
+`15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, and
+`1M`.
+
+The one-shot cycle remains available as a fallback/manual check:
+
 Run one automatic strategy cycle on Binance USD-M Futures testnet:
 
 ```bash
@@ -442,13 +467,16 @@ xsignal-vpe-live live-smoke --symbol BTCUSDT --env-file /etc/xsignal/binance-liv
 Systemd unit templates live in:
 
 ```text
+deploy/systemd/xsignal-vpe-testnet-stream-daemon.service
+deploy/systemd/xsignal-vpe-live-stream-daemon.service
 deploy/systemd/xsignal-vpe-testnet-auto-cycle.service
 deploy/systemd/xsignal-vpe-testnet-auto-cycle.timer
 deploy/systemd/xsignal-vpe-live-auto-cycle.service
 deploy/systemd/xsignal-vpe-live-auto-cycle.timer
 ```
 
-The testnet timer is intended to run automatically after the Binance UTC daily
-close. The live service includes `ConditionPathExists=/etc/xsignal/enable-live-trading`,
-so installing the live unit files does not enable live order submission unless
-the operator deliberately creates that file and provides production API keys.
+The realtime testnet service is the primary automatic trading service. The
+daily timer is intended only as a fallback/manual one-shot runner. The live
+service includes `ConditionPathExists=/etc/xsignal/enable-live-trading`, so
+installing the live unit files does not enable live order submission unless the
+operator deliberately creates that file and provides production API keys.

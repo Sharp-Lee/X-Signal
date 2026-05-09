@@ -1,0 +1,17 @@
+[Unit]
+Description=X-Signal VPE live realtime WebSocket trading daemon
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/xsignal/enable-live-trading
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/x-signal
+Environment=XSIGNAL_ENABLE_LIVE_TRADING=1
+EnvironmentFile=/etc/xsignal/binance-live.env
+ExecStart=/opt/x-signal/.venv/bin/xsignal-vpe-live stream-daemon --mode live --db /var/lib/xsignal/live/vpe-live.sqlite --interval 1h --interval 4h --interval 1d --lookback-bars 120 --i-understand-live-order
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

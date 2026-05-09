@@ -1,0 +1,15 @@
+[Unit]
+Description=X-Signal VPE testnet realtime WebSocket trading daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/x-signal
+EnvironmentFile=/etc/xsignal/binance-testnet.env
+ExecStart=/opt/x-signal/.venv/bin/xsignal-vpe-live stream-daemon --mode testnet --db /var/lib/xsignal/live/vpe-testnet.sqlite --interval 1h --interval 4h --interval 1d --lookback-bars 120
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
