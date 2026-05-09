@@ -438,6 +438,44 @@ def test_run_testnet_deploy_verify_checks_status_rehearsal_and_final_status(tmp_
     }
 
 
+def test_run_testnet_deploy_verify_retries_transient_pre_status_warning(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FullRehearsalBroker(store)
+    statuses = []
+    sleeps = []
+
+    def status_collector():
+        statuses.append(len(statuses) + 1)
+        if len(statuses) == 1:
+            status = _ok_status()
+            status["overall"] = "WARN"
+            status["warnings"] = ["socket_queue_nonzero"]
+            return status
+        return _ok_status()
+
+    report = run_testnet_deploy_verify(
+        store=store,
+        db_path=tmp_path / "live.sqlite",
+        broker=broker,
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        service_name="xsignal-vpe-testnet-stream-daemon.service",
+        status_collector=status_collector,
+        restart_runner=lambda service_name: None,
+        sleep_after_restart_seconds=0,
+        status_retry_sleep_seconds=2,
+        sleeper=sleeps.append,
+        now=NOW,
+    )
+
+    assert report.status == "OK"
+    assert statuses == [1, 2, 3]
+    assert sleeps == [2]
+    assert report.pre_status["overall"] == "OK"
+
+
 def test_run_testnet_deploy_verify_skips_rehearsal_when_pre_status_warn(tmp_path):
     store = LiveStore.open(tmp_path / "live.sqlite")
     store.initialize()
@@ -459,6 +497,7 @@ def test_run_testnet_deploy_verify_skips_rehearsal_when_pre_status_warn(tmp_path
         status_collector=warn_status,
         restart_runner=lambda service_name: None,
         sleep_after_restart_seconds=0,
+        status_attempts=1,
         now=NOW,
     )
 

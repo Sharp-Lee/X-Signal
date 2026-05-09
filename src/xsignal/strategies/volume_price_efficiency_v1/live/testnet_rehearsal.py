@@ -112,17 +112,27 @@ def run_testnet_deploy_verify(
     restart_service: bool = True,
     restart_runner=None,
     sleep_after_restart_seconds: float = 4.0,
+    status_attempts: int = 3,
+    status_retry_sleep_seconds: float = 5.0,
+    sleeper=time.sleep,
     status_collector=None,
     rehearsal_runner=None,
     now: datetime | None = None,
 ) -> TestnetDeployVerifyReport:
+    if status_attempts <= 0:
+        raise ValueError("status_attempts must be positive")
     status_collector = status_collector or (
         lambda: build_status_snapshot(
             db_path=db_path,
             system_snapshot=collect_system_snapshot(service=service_name),
         )
     )
-    pre_status = status_collector()
+    pre_status = _collect_status_until_ok(
+        status_collector=status_collector,
+        attempts=status_attempts,
+        retry_sleep_seconds=status_retry_sleep_seconds,
+        sleeper=sleeper,
+    )
     pre_ok = _status_is_ok(pre_status)
     if not pre_ok:
         return TestnetDeployVerifyReport(
@@ -154,7 +164,12 @@ def run_testnet_deploy_verify(
         sleep_after_restart_seconds=sleep_after_restart_seconds,
         now=now,
     )
-    post_status = status_collector()
+    post_status = _collect_status_until_ok(
+        status_collector=status_collector,
+        attempts=status_attempts,
+        retry_sleep_seconds=status_retry_sleep_seconds,
+        sleeper=sleeper,
+    )
     checks = {
         "pre_status_ok": pre_ok,
         "rehearsal_ok": rehearsal.status == "OK",
@@ -283,11 +298,34 @@ def _status_is_ok(snapshot: dict[str, object]) -> bool:
     return snapshot.get("overall") == "OK"
 
 
+def _collect_status_until_ok(
+    *,
+    status_collector,
+    attempts: int,
+    retry_sleep_seconds: float,
+    sleeper,
+) -> dict[str, object]:
+    snapshot = status_collector()
+    for _ in range(1, attempts):
+        if _status_is_ok(snapshot):
+            return snapshot
+        if retry_sleep_seconds > 0:
+            sleeper(retry_sleep_seconds)
+        snapshot = status_collector()
+    return snapshot
+
+
 def _journal_clean(snapshot: dict[str, object]) -> bool:
     journal = snapshot.get("journal") or {}
     return (
         int(journal.get("rest_429_since_clean", journal.get("rest_429", 0))) == 0
         and int(journal.get("stream_errors_since_clean", journal.get("stream_errors", 0))) == 0
+        and int(
+            journal.get(
+                "user_data_stream_errors_since_clean",
+                journal.get("user_data_stream_errors", 0),
+            )
+        ) == 0
         and int(journal.get("reconcile_error_since_clean", journal.get("reconcile_error", 0))) == 0
     )
 
