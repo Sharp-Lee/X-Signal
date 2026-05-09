@@ -26,6 +26,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.models import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
 from xsignal.strategies.volume_price_efficiency_v1.live.position_store import (
+    LivePositionRecord,
     list_active_live_positions,
     update_live_position,
 )
@@ -72,23 +73,67 @@ class RealtimeStrategyService:
         self._active_symbols = {record.symbol for record in list_active_live_positions(store)}
 
     def process_event(self, event: KlineStreamEvent) -> RealtimeEventResult:
+        if event.is_closed:
+            return self.process_closed_bar(
+                event,
+                allow_entry=True,
+                allow_pyramid_add=True,
+                allow_stop_replace=True,
+            )
+        return self.process_price_event(
+            event,
+            allow_pyramid_add=True,
+            allow_stop_replace=True,
+        )
+
+    def process_price_event(
+        self,
+        event: KlineStreamEvent,
+        *,
+        allow_pyramid_add: bool = True,
+        allow_stop_replace: bool = True,
+    ) -> RealtimeEventResult:
+        if not self._has_active_symbol_position(event.symbol):
+            return RealtimeEventResult(False)
+        metadata = self.metadata_by_symbol.get(event.symbol)
+        stop_updates, adds = self._maintain_symbol_position_from_price(
+            event=event,
+            metadata=metadata,
+            now=self.now_provider(),
+            allow_pyramid_add=allow_pyramid_add,
+            allow_stop_replace=allow_stop_replace,
+        )
+        return RealtimeEventResult(
+            closed_signal_checked=False,
+            stop_updates=stop_updates,
+            adds=adds,
+        )
+
+    def process_closed_bar(
+        self,
+        event: KlineStreamEvent,
+        *,
+        allow_entry: bool = True,
+        allow_pyramid_add: bool = True,
+        allow_stop_replace: bool = True,
+    ) -> RealtimeEventResult:
         buffer = self.buffers.get(event.interval)
         if buffer is None:
             return RealtimeEventResult(False, skipped_reason="interval_not_configured")
-        if not event.is_closed and not self._has_active_symbol_position(event.symbol):
-            return RealtimeEventResult(False)
-        if event.is_closed:
-            buffer.apply_event(event)
+        if not event.is_closed:
+            return self.process_price_event(
+                event,
+                allow_pyramid_add=allow_pyramid_add,
+                allow_stop_replace=allow_stop_replace,
+            )
+        buffer.apply_event(event)
         arrays = buffer.to_arrays()
         if event.symbol not in arrays.symbols:
-            return RealtimeEventResult(event.is_closed, skipped_reason="event_not_in_buffer")
+            return RealtimeEventResult(True, skipped_reason="event_not_in_buffer")
         symbol_index = arrays.symbols.index(event.symbol)
-        if event.is_closed:
-            if event.open_time not in set(arrays.open_times):
-                return RealtimeEventResult(True, skipped_reason="event_not_in_buffer")
-            time_index = list(arrays.open_times).index(event.open_time)
-        else:
-            time_index = arrays.open.shape[0] - 1
+        if event.open_time not in set(arrays.open_times):
+            return RealtimeEventResult(True, skipped_reason="event_not_in_buffer")
+        time_index = list(arrays.open_times).index(event.open_time)
         features = (
             self.feature_builder(arrays)
             if self.feature_builder is not None
@@ -104,16 +149,14 @@ class RealtimeStrategyService:
             atr=float(atr) if np.isfinite(atr) else None,
             metadata=metadata,
             now=self.now_provider(),
+            allow_pyramid_add=allow_pyramid_add,
+            allow_stop_replace=allow_stop_replace,
+            required_strategy_interval=event.interval,
         )
 
-        if not event.is_closed:
-            return RealtimeEventResult(
-                closed_signal_checked=False,
-                stop_updates=stop_updates,
-                adds=adds,
-            )
-
         if metadata is None:
+            return RealtimeEventResult(True, stop_updates=stop_updates, adds=adds)
+        if not allow_entry:
             return RealtimeEventResult(True, stop_updates=stop_updates, adds=adds)
         self._refresh_active_symbols()
         if self._has_active_symbol_position(event.symbol):
@@ -129,6 +172,7 @@ class RealtimeStrategyService:
             atr=float(atr),
             metadata=metadata,
             now=self.now_provider(),
+            strategy_interval=event.interval,
         )
         return RealtimeEventResult(
             closed_signal_checked=True,
@@ -144,6 +188,9 @@ class RealtimeStrategyService:
         atr: float | None,
         metadata: SymbolMetadata | None,
         now: datetime,
+        allow_pyramid_add: bool = True,
+        allow_stop_replace: bool = True,
+        required_strategy_interval: str | None = None,
     ) -> tuple[int, int]:
         stop_updates = 0
         adds = 0
@@ -151,62 +198,146 @@ class RealtimeStrategyService:
         if not active:
             self._active_symbols.discard(event.symbol)
         for record in active:
-            updated_record = replace(
-                record,
-                highest_high=max(record.highest_high or event.high, event.high, event.close),
-            )
-            if atr is not None and metadata is not None:
-                candidate_stop = updated_record.highest_high - self.config.atr_multiplier * atr
-                try:
-                    normalized_stop = float(SymbolRules.from_metadata(metadata).normalize_price(candidate_stop))
-                except ValueError:
-                    normalized_stop = None
-                if normalized_stop is not None:
-                    replaced = replace_trailing_stop(
-                        store=self.store,
-                        broker=self.broker,
-                        environment=self.environment,
-                        record=updated_record,
-                        candidate_stop_price=normalized_stop,
-                        now=now,
-                    )
-                    if replaced.stop_price != updated_record.stop_price:
-                        stop_updates += 1
-                    updated_record = replaced
             if (
-                metadata is not None
-                and updated_record.next_add_trigger is not None
-                and updated_record.add_count < self.config.pyramid_max_adds
-                and event.high >= updated_record.next_add_trigger
-                and event.close >= updated_record.next_add_trigger
+                required_strategy_interval is not None
+                and record.strategy_interval is not None
+                and record.strategy_interval != required_strategy_interval
             ):
-                add_notional = updated_record.quantity * event.close
-                account = self.account_provider()
-                if _risk_accepted(
-                    config=self.config,
-                    environment=self.environment,
-                    intent_type=OrderIntentType.PYRAMID_ADD,
-                    symbol=event.symbol,
-                    side="BUY",
-                    quantity=updated_record.quantity,
-                    notional=add_notional,
-                    metadata=metadata,
-                    account=account,
-                    position_state=PositionState.OPEN,
-                    now=now,
-                ):
-                    updated_record = submit_pyramid_add(
-                        store=self.store,
-                        broker=self.broker,
-                        environment=self.environment,
-                        record=updated_record,
-                        quantity=updated_record.quantity,
-                        execution_price=event.close,
-                        now=now,
-                    )
-                    adds += 1
+                continue
+            updated_record, stop_delta, add_delta = self._maintain_position_record(
+                record=record,
+                event=event,
+                atr=atr,
+                metadata=metadata,
+                now=now,
+                allow_pyramid_add=allow_pyramid_add,
+                allow_stop_replace=allow_stop_replace,
+            )
             update_live_position(self.store, updated_record)
+            stop_updates += stop_delta
+            adds += add_delta
         return stop_updates, adds
+
+    def _maintain_symbol_position_from_price(
+        self,
+        *,
+        event: KlineStreamEvent,
+        metadata: SymbolMetadata | None,
+        now: datetime,
+        allow_pyramid_add: bool,
+        allow_stop_replace: bool,
+    ) -> tuple[int, int]:
+        stop_updates = 0
+        adds = 0
+        active = [record for record in list_active_live_positions(self.store) if record.symbol == event.symbol]
+        if not active:
+            self._active_symbols.discard(event.symbol)
+        for record in active:
+            atr = self._latest_atr_for_symbol(
+                interval=record.strategy_interval or event.interval,
+                symbol=event.symbol,
+            )
+            updated_record, stop_delta, add_delta = self._maintain_position_record(
+                record=record,
+                event=event,
+                atr=atr,
+                metadata=metadata,
+                now=now,
+                allow_pyramid_add=allow_pyramid_add,
+                allow_stop_replace=allow_stop_replace,
+            )
+            update_live_position(self.store, updated_record)
+            stop_updates += stop_delta
+            adds += add_delta
+        return stop_updates, adds
+
+    def _maintain_position_record(
+        self,
+        *,
+        record: LivePositionRecord,
+        event: KlineStreamEvent,
+        atr: float | None,
+        metadata: SymbolMetadata | None,
+        now: datetime,
+        allow_pyramid_add: bool,
+        allow_stop_replace: bool,
+    ) -> tuple[LivePositionRecord, int, int]:
+        stop_updates = 0
+        adds = 0
+        updated_record = replace(
+            record,
+            highest_high=max(record.highest_high or event.high, event.high, event.close),
+        )
+        if allow_stop_replace and atr is not None and metadata is not None:
+            candidate_stop = updated_record.highest_high - self.config.atr_multiplier * atr
+            try:
+                normalized_stop = float(SymbolRules.from_metadata(metadata).normalize_price(candidate_stop))
+            except ValueError:
+                normalized_stop = None
+            if normalized_stop is not None:
+                replaced = replace_trailing_stop(
+                    store=self.store,
+                    broker=self.broker,
+                    environment=self.environment,
+                    record=updated_record,
+                    candidate_stop_price=normalized_stop,
+                    now=now,
+                )
+                if replaced.stop_price != updated_record.stop_price:
+                    stop_updates += 1
+                updated_record = replaced
+        if (
+            allow_pyramid_add
+            and metadata is not None
+            and updated_record.next_add_trigger is not None
+            and updated_record.add_count < self.config.pyramid_max_adds
+            and event.high >= updated_record.next_add_trigger
+            and event.close >= updated_record.next_add_trigger
+        ):
+            add_notional = updated_record.quantity * event.close
+            account = self.account_provider()
+            if _risk_accepted(
+                config=self.config,
+                environment=self.environment,
+                intent_type=OrderIntentType.PYRAMID_ADD,
+                symbol=event.symbol,
+                side="BUY",
+                quantity=updated_record.quantity,
+                notional=add_notional,
+                metadata=metadata,
+                account=account,
+                position_state=PositionState.OPEN,
+                now=now,
+            ):
+                updated_record = submit_pyramid_add(
+                    store=self.store,
+                    broker=self.broker,
+                    environment=self.environment,
+                    record=updated_record,
+                    quantity=updated_record.quantity,
+                    execution_price=event.close,
+                    now=now,
+                )
+                adds += 1
+        return updated_record, stop_updates, adds
+
+    def _latest_atr_for_symbol(self, *, interval: str, symbol: str) -> float | None:
+        buffer = self.buffers.get(interval)
+        if buffer is None:
+            return None
+        arrays = buffer.to_arrays()
+        if symbol not in arrays.symbols or arrays.open.shape[0] == 0:
+            return None
+        symbol_index = arrays.symbols.index(symbol)
+        features = (
+            self.feature_builder(arrays)
+            if self.feature_builder is not None
+            else compute_features(arrays, build_vpe_live_strategy_config())
+        )
+        atr = features.atr[-1, symbol_index]
+        if not np.isfinite(atr) or atr <= 0:
+            return None
+        return float(atr)
 
     def _try_enter(
         self,
@@ -215,6 +346,7 @@ class RealtimeStrategyService:
         atr: float,
         metadata: SymbolMetadata,
         now: datetime,
+        strategy_interval: str,
     ) -> bool:
         account = self.account_provider()
         notional = size_entry_notional(self.config, account)
@@ -252,6 +384,7 @@ class RealtimeStrategyService:
             entry_price=event.close,
             atr=atr,
             now=now,
+            strategy_interval=strategy_interval,
         )
         self._active_symbols.add(event.symbol)
         return True

@@ -30,6 +30,7 @@ def enter_long_with_protection(
     entry_price: float,
     atr: float,
     now: datetime,
+    strategy_interval: str | None = None,
 ) -> LivePositionRecord:
     position_id = store.create_position(symbol=symbol, state=PositionState.ENTRY_SUBMITTED)
     entry_client_id = _client_id(
@@ -108,6 +109,7 @@ def enter_long_with_protection(
         add_count=0,
         active_stop_client_order_id=stop_client_id,
         last_decision_open_time=None,
+        strategy_interval=strategy_interval,
     )
     update_live_position(store, record)
     return record

@@ -56,6 +56,51 @@ def fetch_closed_klines(
     return rows
 
 
+def fetch_closed_klines_range(
+    rest_client,
+    *,
+    symbol: str,
+    interval: str,
+    start_time: datetime,
+    end_time: datetime,
+    server_time_ms: int,
+    limit: int = 1500,
+) -> list[dict[str, object]]:
+    validate_interval(interval)
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    start_ms = _dt_to_ms(start_time)
+    end_ms = _dt_to_ms(end_time)
+    if start_ms > end_ms:
+        return []
+    rows: list[dict[str, object]] = []
+    next_start_ms = start_ms
+    while next_start_ms <= end_ms:
+        payload = rest_client.request(
+            "GET",
+            "/fapi/v1/klines",
+            params={
+                "symbol": symbol,
+                "interval": interval,
+                "startTime": next_start_ms,
+                "endTime": end_ms,
+                "limit": limit,
+            },
+        )
+        if not payload:
+            break
+        for item in payload:
+            close_time_ms = int(item[6])
+            if close_time_ms >= server_time_ms:
+                continue
+            rows.append(parse_kline(symbol, item, interval=interval))
+        if len(payload) < limit:
+            break
+        last_open_ms = int(payload[-1][0])
+        next_start_ms = last_open_ms + _fixed_interval_ms(interval)
+    return rows
+
+
 def fetch_closed_daily_klines(
     rest_client,
     *,
@@ -159,3 +204,19 @@ def _valid_price_row(row: dict[str, object]) -> bool:
         and low <= min(open_, close)
         and quote_volume > 0
     )
+
+
+def _dt_to_ms(value: datetime) -> int:
+    return int(value.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def _fixed_interval_ms(interval: str) -> int:
+    if interval.endswith("m"):
+        return int(interval[:-1]) * 60_000
+    if interval.endswith("h"):
+        return int(interval[:-1]) * 60 * 60_000
+    if interval.endswith("d"):
+        return int(interval[:-1]) * 24 * 60 * 60_000
+    if interval == "1w":
+        return 7 * 24 * 60 * 60_000
+    raise ValueError(f"range pagination does not support variable interval {interval}")
