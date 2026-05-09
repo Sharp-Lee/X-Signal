@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+import threading
 import time
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
@@ -9,7 +10,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
-    _run_locked_recovery,
+    _recover_symbols_1m_gap_async,
     _should_parse_stream_payload,
     _stream_error_backoff_seconds,
     build_daemon_stream_urls,
@@ -78,6 +79,38 @@ class FakeRecoveryStore:
 
     def advance_market_cursor(self, *, symbol, interval, open_time, commit=True) -> None:
         raise AssertionError("no cursor should advance in this test")
+
+
+class ThreadCheckingConnection:
+    def __init__(self, main_thread_id: int) -> None:
+        self.main_thread_id = main_thread_id
+        self.commit_threads = []
+
+    def commit(self) -> None:
+        self.commit_threads.append(threading.get_ident())
+        assert threading.get_ident() == self.main_thread_id
+
+
+class ThreadCheckingRecoveryStore:
+    def __init__(self, main_thread_id: int) -> None:
+        self.main_thread_id = main_thread_id
+        self.connection = ThreadCheckingConnection(main_thread_id)
+        self.cursor_threads = []
+        self.upsert_threads = []
+        self.advance_threads = []
+
+    def get_market_cursor(self, *, symbol, interval):
+        self.cursor_threads.append(threading.get_ident())
+        assert threading.get_ident() == self.main_thread_id
+        return datetime(2026, 5, 9, 8, tzinfo=timezone.utc)
+
+    def upsert_market_bar(self, row, *, commit=True) -> None:
+        self.upsert_threads.append(threading.get_ident())
+        assert threading.get_ident() == self.main_thread_id
+
+    def advance_market_cursor(self, *, symbol, interval, open_time, commit=True) -> None:
+        self.advance_threads.append(threading.get_ident())
+        assert threading.get_ident() == self.main_thread_id
 
 
 class FakeAggregator:
@@ -242,13 +275,71 @@ def test_stream_error_backoff_uses_longer_delay_for_rate_limits():
     assert _stream_error_backoff_seconds(RuntimeError("closed"), config) == 5.0
 
 
-def test_locked_recovery_runs_in_thread_and_serializes_calls():
+def test_async_recovery_keeps_sqlite_work_on_event_loop_thread():
+    main_thread_id = threading.get_ident()
+    store = ThreadCheckingRecoveryStore(main_thread_id)
+    rest_thread_ids = []
+    fetch_thread_ids = []
+
+    class ThreadCheckingRestClient:
+        def request(self, method, path, *, signed=False, params=None):
+            rest_thread_ids.append(threading.get_ident())
+            assert threading.get_ident() != main_thread_id
+            return {"serverTime": 1778330000000}
+
+    def fetch_range(rest_client, **kwargs):
+        fetch_thread_ids.append(threading.get_ident())
+        assert threading.get_ident() != main_thread_id
+        return [
+            {
+                "symbol": kwargs["symbol"],
+                "interval": "1m",
+                "open_time": datetime(2026, 5, 9, 8, 1, tzinfo=timezone.utc),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "quote_volume": 10.0,
+                "is_complete": True,
+            }
+        ]
+
+    async def run() -> None:
+        recovery_lock = asyncio.Lock()
+        await _recover_symbols_1m_gap_async(
+            recovery_lock=recovery_lock,
+            store=store,
+            rest_client=ThreadCheckingRestClient(),
+            aggregator=EmptyAggregator(),
+            service=None,
+            symbols=["BTCUSDT"],
+            intervals=("1h",),
+            recovery_sleep_ms=0,
+            fetch_range=fetch_range,
+        )
+
+    asyncio.run(run())
+
+    assert rest_thread_ids
+    assert fetch_thread_ids
+    assert store.cursor_threads == [main_thread_id]
+    assert store.upsert_threads == [main_thread_id]
+    assert store.advance_threads == [main_thread_id]
+    assert store.connection.commit_threads == [main_thread_id]
+
+
+def test_async_recovery_serializes_fetches_but_keeps_event_loop_responsive():
     events = []
 
-    def recovery_runner(*, name: str) -> None:
-        events.append(f"start-{name}")
+    def fetch_range(rest_client, **kwargs):
+        events.append(f"start-{kwargs['symbol']}")
         time.sleep(0.05)
-        events.append(f"end-{name}")
+        events.append(f"end-{kwargs['symbol']}")
+        return []
+
+    class TimeClient:
+        def request(self, method, path, *, signed=False, params=None):
+            return {"serverTime": 1778330000000}
 
     async def tick() -> None:
         await asyncio.sleep(0.01)
@@ -257,18 +348,30 @@ def test_locked_recovery_runs_in_thread_and_serializes_calls():
     async def run() -> None:
         recovery_lock = asyncio.Lock()
         first = asyncio.create_task(
-            _run_locked_recovery(
+            _recover_symbols_1m_gap_async(
                 recovery_lock=recovery_lock,
-                recovery_runner=recovery_runner,
-                name="first",
+                store=FakeRecoveryStore(),
+                rest_client=TimeClient(),
+                aggregator=EmptyAggregator(),
+                service=None,
+                symbols=["BTCUSDT"],
+                intervals=("1h",),
+                recovery_sleep_ms=0,
+                fetch_range=fetch_range,
             )
         )
         await asyncio.sleep(0)
         second = asyncio.create_task(
-            _run_locked_recovery(
+            _recover_symbols_1m_gap_async(
                 recovery_lock=recovery_lock,
-                recovery_runner=recovery_runner,
-                name="second",
+                store=FakeRecoveryStore(),
+                rest_client=TimeClient(),
+                aggregator=EmptyAggregator(),
+                service=None,
+                symbols=["ETHUSDT"],
+                intervals=("1h",),
+                recovery_sleep_ms=0,
+                fetch_range=fetch_range,
             )
         )
         ticker = asyncio.create_task(tick())
@@ -276,8 +379,8 @@ def test_locked_recovery_runs_in_thread_and_serializes_calls():
 
     asyncio.run(run())
 
-    assert events.index("tick") < events.index("end-first")
-    assert events.index("start-second") > events.index("end-first")
+    assert events.index("tick") < events.index("end-BTCUSDT")
+    assert events.index("start-ETHUSDT") > events.index("end-BTCUSDT")
 
 
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():

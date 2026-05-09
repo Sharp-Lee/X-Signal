@@ -285,9 +285,8 @@ async def _consume_stream_url(
 
     while not stop_event.is_set():
         try:
-            await _run_locked_recovery(
+            await _recover_symbols_1m_gap_async(
                 recovery_lock=recovery_lock,
-                recovery_runner=_recover_symbols_1m_gap,
                 store=store,
                 rest_client=rest_client,
                 aggregator=aggregator,
@@ -326,11 +325,6 @@ async def _consume_stream_url(
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
-
-
-async def _run_locked_recovery(*, recovery_lock: asyncio.Lock, recovery_runner, **kwargs) -> None:
-    async with recovery_lock:
-        await asyncio.to_thread(recovery_runner, **kwargs)
 
 
 def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService) -> bool:
@@ -405,6 +399,62 @@ def _recover_symbols_1m_gap(
             source_bars=recovered_source,
             aggregated_bars=recovered_aggregates,
         )
+
+
+async def _recover_symbols_1m_gap_async(
+    *,
+    recovery_lock: asyncio.Lock,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    symbols: list[str],
+    intervals: tuple[str, ...],
+    recovery_sleep_ms: int,
+    fetch_range=fetch_closed_klines_range,
+) -> None:
+    async with recovery_lock:
+        server_time_ms = await asyncio.to_thread(
+            lambda: int(rest_client.request("GET", "/fapi/v1/time")["serverTime"])
+        )
+        end_time = latest_closed_1m_open_time(server_time_ms)
+        recovered_source = 0
+        recovered_aggregates = 0
+        for symbol in symbols:
+            start_time = recovery_start_time(
+                store=store,
+                symbol=symbol,
+                target_intervals=intervals,
+                server_time_ms=server_time_ms,
+            )
+            rows = await asyncio.to_thread(
+                fetch_range,
+                rest_client,
+                symbol=symbol,
+                interval="1m",
+                start_time=start_time,
+                end_time=end_time,
+                server_time_ms=server_time_ms,
+            )
+            result = replay_closed_1m_events(
+                store=store,
+                aggregator=aggregator,
+                sink=service,
+                events=[event_from_market_bar(row) for row in rows],
+                allow_entries=False,
+                allow_pyramid_add=False,
+            )
+            recovered_source += result.source_bars
+            recovered_aggregates += result.aggregated_bars
+            if recovery_sleep_ms > 0:
+                await asyncio.sleep(recovery_sleep_ms / 1000)
+        if recovered_source or recovered_aggregates:
+            _print_event(
+                "market_gap_recovered",
+                symbols=len(symbols),
+                source_bars=recovered_source,
+                aggregated_bars=recovered_aggregates,
+            )
 
 
 def _process_closed_1m_event(
