@@ -126,3 +126,56 @@ def test_store_persists_metadata_and_account_snapshot(tmp_path):
     store.record_account_snapshot(snapshot)
     assert store.get_symbol_metadata("BTCUSDT") == metadata
     assert store.latest_account_snapshot() == snapshot
+
+
+def test_store_persists_closed_market_bars_and_lists_them_in_time_order(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    first_open = datetime(2026, 5, 9, 8, 1, tzinfo=timezone.utc)
+    second_open = datetime(2026, 5, 9, 8, tzinfo=timezone.utc)
+
+    store.upsert_market_bar(
+        {
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "open_time": first_open,
+            "open": 101.0,
+            "high": 103.0,
+            "low": 100.0,
+            "close": 102.0,
+            "quote_volume": 12.5,
+            "is_complete": True,
+        }
+    )
+    store.upsert_market_bar(
+        {
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "open_time": second_open,
+            "open": 100.0,
+            "high": 102.0,
+            "low": 99.0,
+            "close": 101.0,
+            "quote_volume": 10.5,
+            "is_complete": True,
+        }
+    )
+
+    rows = store.list_market_bars(symbol="BTCUSDT", interval="1m")
+
+    assert [row["open_time"] for row in rows] == [second_open, first_open]
+    assert rows[0]["close"] == 101.0
+    assert rows[1]["quote_volume"] == 12.5
+    assert rows[0]["is_complete"] is True
+
+
+def test_store_advances_market_cursor_without_regressing(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    first_open = datetime(2026, 5, 9, 8, tzinfo=timezone.utc)
+    later_open = datetime(2026, 5, 9, 8, 5, tzinfo=timezone.utc)
+
+    store.advance_market_cursor(symbol="BTCUSDT", interval="1m", open_time=later_open)
+    store.advance_market_cursor(symbol="BTCUSDT", interval="1m", open_time=first_open)
+
+    assert store.get_market_cursor(symbol="BTCUSDT", interval="1m") == later_open

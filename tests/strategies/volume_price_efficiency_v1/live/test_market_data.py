@@ -4,6 +4,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.market_data import (
     build_arrays_from_klines,
     build_arrays_from_daily_klines,
     fetch_closed_klines,
+    fetch_closed_klines_range,
     fetch_closed_daily_klines,
     load_recent_arrays,
     load_recent_daily_arrays,
@@ -83,6 +84,42 @@ def test_fetch_closed_klines_uses_requested_interval_and_excludes_forming_bar():
             "/fapi/v1/klines",
             False,
             {"symbol": "BTCUSDT", "interval": "4h", "limit": 2},
+        )
+    ]
+
+
+def test_fetch_closed_klines_range_uses_start_and_end_time_and_excludes_forming_bar():
+    client = FakeMarketRestClient(
+        [
+            _kline(1778313600000, 1778313659999, close="101"),
+            _kline(1778313660000, 1778313719999, close="102"),
+            _kline(1778313720000, 1778313779999, close="103"),
+        ]
+    )
+
+    rows = fetch_closed_klines_range(
+        client,
+        symbol="BTCUSDT",
+        interval="1m",
+        start_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        end_time=datetime(2026, 5, 9, 8, 2, tzinfo=timezone.utc),
+        server_time_ms=1778313720000,
+        limit=1500,
+    )
+
+    assert [row["close"] for row in rows] == [101.0, 102.0]
+    assert client.calls == [
+        (
+            "GET",
+            "/fapi/v1/klines",
+            False,
+            {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "startTime": 1778313600000,
+                "endTime": 1778313720000,
+                "limit": 1500,
+            },
         )
     ]
 

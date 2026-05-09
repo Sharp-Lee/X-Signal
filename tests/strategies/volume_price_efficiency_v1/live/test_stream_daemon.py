@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     build_daemon_stream_urls,
+    build_daemon_stream_specs,
     seed_rolling_buffers,
     ws_base_url_for_mode,
 )
@@ -46,7 +47,7 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     assert config.max_streams == 200
 
 
-def test_build_daemon_stream_urls_chunks_all_symbols_and_intervals():
+def test_build_daemon_stream_urls_subscribes_only_to_1m_source_streams():
     urls = build_daemon_stream_urls(
         mode="testnet",
         symbols=["BTCUSDT", "ETHUSDT"],
@@ -55,9 +56,23 @@ def test_build_daemon_stream_urls_chunks_all_symbols_and_intervals():
     )
 
     assert urls == [
-        "wss://stream.binancefuture.com/stream?streams=btcusdt@kline_1h/ethusdt@kline_1h/btcusdt@kline_4h",
-        "wss://stream.binancefuture.com/stream?streams=ethusdt@kline_4h",
+        "wss://stream.binancefuture.com/stream?streams=btcusdt@kline_1m/ethusdt@kline_1m",
     ]
+
+
+def test_build_daemon_stream_specs_keeps_symbol_chunks_for_gap_recovery():
+    specs = build_daemon_stream_specs(
+        mode="testnet",
+        symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+        max_streams=2,
+    )
+
+    assert [spec.symbols for spec in specs] == [
+        ("BTCUSDT", "ETHUSDT"),
+        ("SOLUSDT",),
+    ]
+    assert specs[0].url.endswith("btcusdt@kline_1m/ethusdt@kline_1m")
+    assert specs[1].url.endswith("solusdt@kline_1m")
 
 
 def test_seed_rolling_buffers_fetches_each_interval_and_symbol():

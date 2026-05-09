@@ -7,14 +7,27 @@ import json
 from pathlib import Path
 import time
 
+from xsignal.strategies.volume_price_efficiency_v1.live.bar_aggregator import (
+    MultiIntervalAggregator,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.bar_buffer import RollingBarBuffer
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_adapter import (
     build_usd_futures_broker,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceRestClient
-from xsignal.strategies.volume_price_efficiency_v1.live.market_data import fetch_closed_klines
+from xsignal.strategies.volume_price_efficiency_v1.live.market_data import (
+    fetch_closed_klines,
+    fetch_closed_klines_range,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeStrategyService
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
+from xsignal.strategies.volume_price_efficiency_v1.live.recovery import (
+    event_from_market_bar,
+    latest_closed_1m_open_time,
+    market_bar_from_event,
+    recovery_start_time,
+    replay_closed_1m_events,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
     BINANCE_USD_FUTURES_LIVE_WS_BASE_URL,
@@ -27,6 +40,12 @@ from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
 
 DEFAULT_REALTIME_INTERVALS = ("1h", "4h", "1d")
 DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 200
+
+
+@dataclass(frozen=True)
+class StreamUrlSpec:
+    url: str
+    symbols: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -68,12 +87,36 @@ def build_daemon_stream_urls(
     intervals: list[str] | tuple[str, ...],
     max_streams: int,
 ) -> list[str]:
-    return build_combined_stream_urls(
-        symbols=symbols,
-        intervals=list(intervals),
-        base_url=ws_base_url_for_mode(mode),
-        max_streams=max_streams,
-    )
+    for interval in intervals:
+        validate_interval(interval)
+    return [spec.url for spec in build_daemon_stream_specs(mode=mode, symbols=symbols, max_streams=max_streams)]
+
+
+def build_daemon_stream_specs(
+    *,
+    mode: str,
+    symbols: list[str],
+    max_streams: int,
+) -> list[StreamUrlSpec]:
+    specs = []
+    for chunk in _chunk_symbols(symbols, max_streams=max_streams):
+        url = build_combined_stream_urls(
+            symbols=list(chunk),
+            intervals=["1m"],
+            base_url=ws_base_url_for_mode(mode),
+            max_streams=max_streams,
+        )[0]
+        specs.append(StreamUrlSpec(url=url, symbols=chunk))
+    return specs
+
+
+def _chunk_symbols(symbols: list[str], *, max_streams: int) -> list[tuple[str, ...]]:
+    if max_streams <= 0:
+        raise ValueError("max_streams must be positive")
+    return [
+        tuple(symbols[index : index + max_streams])
+        for index in range(0, len(symbols), max_streams)
+    ]
 
 
 def seed_rolling_buffers(
@@ -169,17 +212,28 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         ),
         now_provider=lambda: datetime.now(timezone.utc),
     )
-    urls = build_daemon_stream_urls(
+    aggregator = MultiIntervalAggregator(intervals=config.intervals)
+    specs = build_daemon_stream_specs(
         mode=config.mode,
         symbols=symbols,
-        intervals=config.intervals,
         max_streams=config.max_streams,
     )
     stop_event = asyncio.Event()
     counter = _EventCounter(limit=config.stop_after_events)
     tasks = [
-        asyncio.create_task(_consume_stream_url(url, service, stop_event, counter, config))
-        for url in urls
+        asyncio.create_task(
+            _consume_stream_url(
+                spec,
+                store,
+                broker.rest_client,
+                aggregator,
+                service,
+                stop_event,
+                counter,
+                config,
+            )
+        )
+        for spec in specs
     ]
     if config.reconcile_interval_seconds > 0:
         tasks.append(
@@ -199,7 +253,10 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
 
 
 async def _consume_stream_url(
-    url: str,
+    spec: StreamUrlSpec,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
     service: RealtimeStrategyService,
     stop_event: asyncio.Event,
     counter: "_EventCounter",
@@ -209,30 +266,122 @@ async def _consume_stream_url(
 
     while not stop_event.is_set():
         try:
-            async with websockets.connect(url, ping_interval=180, ping_timeout=600) as websocket:
-                _print_event("stream_connected", url=url.split("?streams=", 1)[0])
+            _recover_symbols_1m_gap(
+                store=store,
+                rest_client=rest_client,
+                aggregator=aggregator,
+                service=service,
+                symbols=list(spec.symbols),
+                intervals=config.intervals,
+                seed_sleep_ms=config.seed_sleep_ms,
+            )
+            async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
+                _print_event("stream_connected", url=spec.url.split("?streams=", 1)[0])
                 async for message in websocket:
                     if stop_event.is_set():
                         return
                     payload = json.loads(message)
                     event = parse_kline_stream_event(payload)
-                    result = service.process_event(event)
-                    if result.entries or result.adds or result.stop_updates:
-                        _print_event(
-                            "strategy_action",
-                            symbol=event.symbol,
-                            interval=event.interval,
-                            closed=event.is_closed,
-                            entries=result.entries,
-                            adds=result.adds,
-                            stop_updates=result.stop_updates,
+                    if event.is_closed:
+                        _process_closed_1m_event(
+                            store=store,
+                            aggregator=aggregator,
+                            service=service,
+                            event=event,
                         )
+                    else:
+                        result = service.process_price_event(event, allow_pyramid_add=True)
+                        _print_strategy_action(event=event, result=result)
                     if counter.incremented_past_limit():
                         stop_event.set()
                         return
         except Exception as exc:  # noqa: BLE001
             _print_event("stream_error", error=str(exc))
             await asyncio.sleep(config.reconnect_backoff_seconds)
+
+
+def _recover_symbols_1m_gap(
+    *,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    symbols: list[str],
+    intervals: tuple[str, ...],
+    seed_sleep_ms: int,
+) -> None:
+    server_time_ms = int(rest_client.request("GET", "/fapi/v1/time")["serverTime"])
+    end_time = latest_closed_1m_open_time(server_time_ms)
+    recovered_source = 0
+    recovered_aggregates = 0
+    for symbol in symbols:
+        start_time = recovery_start_time(
+            store=store,
+            symbol=symbol,
+            target_intervals=intervals,
+            server_time_ms=server_time_ms,
+        )
+        rows = fetch_closed_klines_range(
+            rest_client,
+            symbol=symbol,
+            interval="1m",
+            start_time=start_time,
+            end_time=end_time,
+            server_time_ms=server_time_ms,
+        )
+        result = replay_closed_1m_events(
+            store=store,
+            aggregator=aggregator,
+            sink=service,
+            events=[event_from_market_bar(row) for row in rows],
+            allow_entries=False,
+            allow_pyramid_add=False,
+        )
+        recovered_source += result.source_bars
+        recovered_aggregates += result.aggregated_bars
+        if seed_sleep_ms > 0:
+            time.sleep(seed_sleep_ms / 1000)
+    if recovered_source or recovered_aggregates:
+        _print_event(
+            "market_gap_recovered",
+            symbols=len(symbols),
+            source_bars=recovered_source,
+            aggregated_bars=recovered_aggregates,
+        )
+
+
+def _process_closed_1m_event(
+    *,
+    store: LiveStore,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    event,
+) -> None:
+    store.upsert_market_bar(market_bar_from_event(event))
+    store.advance_market_cursor(symbol=event.symbol, interval="1m", open_time=event.open_time)
+    price_result = service.process_price_event(event, allow_pyramid_add=True)
+    _print_strategy_action(event=event, result=price_result)
+    for aggregate in aggregator.apply_1m_event(event):
+        store.upsert_market_bar(market_bar_from_event(aggregate))
+        result = service.process_closed_bar(
+            aggregate,
+            allow_entry=True,
+            allow_pyramid_add=True,
+        )
+        _print_strategy_action(event=aggregate, result=result)
+
+
+def _print_strategy_action(*, event, result) -> None:
+    if result.entries or result.adds or result.stop_updates:
+        _print_event(
+            "strategy_action",
+            symbol=event.symbol,
+            interval=event.interval,
+            closed=event.is_closed,
+            entries=result.entries,
+            adds=result.adds,
+            stop_updates=result.stop_updates,
+        )
 
 
 async def _periodic_reconcile(

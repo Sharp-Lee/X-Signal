@@ -397,10 +397,12 @@ service loop.
 ## VPE Automatic Live Cycle
 
 The preferred automatic runner is the realtime WebSocket daemon. It subscribes
-to all selected `TRADING` USDT perpetual kline streams, screens signals only
-when Binance marks a kline closed, and maintains open positions from realtime
-unclosed kline updates. Trailing stops and pyramid-add triggers use the forming
-bar high plus latest close price; entries still require a closed-bar signal.
+only to each selected `TRADING` USDT perpetual symbol's `1m` kline stream, then
+locally aggregates the configured signal intervals. Signals are screened only
+when a locally aggregated bar is complete; open positions are maintained from
+the realtime `1m` high plus latest close price. Trailing stops and pyramid-add
+triggers use those forming `1m` updates, while entries still require a closed
+signal bar.
 
 Run the testnet daemon locally:
 
@@ -418,6 +420,13 @@ If `--interval` is omitted, the daemon defaults to `1h`, `4h`, and `1d`.
 Any Binance USD-M kline interval is accepted, including `1m`, `3m`, `5m`,
 `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, and
 `1M`.
+
+On startup and before every WebSocket reconnect, the daemon reads the persisted
+`1m` cursor for each symbol, fetches any missing closed `1m` bars through REST,
+stores them locally, and replays them through the local aggregator. Recovered
+historical bars update buffers and protective position state, but they do not
+open delayed entries or submit delayed pyramid adds; the daemon waits for fresh
+realtime triggers after recovery.
 
 The one-shot cycle remains available as a fallback/manual check:
 

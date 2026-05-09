@@ -13,6 +13,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.models import (
     PositionState,
     SymbolMetadata,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import validate_interval
 
 
 def _dt(value: datetime) -> str:
@@ -97,6 +98,26 @@ class LiveStore:
               daily_realized_pnl real not null,
               captured_at text not null
             );
+            create table if not exists market_bars (
+              symbol text not null,
+              interval text not null,
+              open_time text not null,
+              open real not null,
+              high real not null,
+              low real not null,
+              close real not null,
+              quote_volume real not null,
+              is_complete integer not null,
+              updated_at text not null default CURRENT_TIMESTAMP,
+              primary key(symbol, interval, open_time)
+            );
+            create table if not exists market_cursors (
+              symbol text not null,
+              interval text not null,
+              last_open_time text not null,
+              updated_at text not null default CURRENT_TIMESTAMP,
+              primary key(symbol, interval)
+            );
             """
         )
         self._ensure_position_columns()
@@ -126,6 +147,7 @@ class LiveStore:
             "add_count": "integer not null default 0",
             "active_stop_client_order_id": "text",
             "last_decision_open_time": "text",
+            "strategy_interval": "text",
         }.items():
             if name not in columns:
                 self.connection.execute(f"alter table positions add column {name} {definition}")
@@ -421,3 +443,114 @@ class LiveStore:
             daily_realized_pnl=row["daily_realized_pnl"],
             captured_at=_parse_dt(row["captured_at"]),
         )
+
+    def upsert_market_bar(self, row: dict[str, object]) -> None:
+        interval = validate_interval(str(row["interval"]))
+        open_time = row["open_time"]
+        if not isinstance(open_time, datetime):
+            raise ValueError("market bar open_time must be a datetime")
+        self.connection.execute(
+            """
+            insert into market_bars(
+              symbol, interval, open_time, open, high, low, close, quote_volume,
+              is_complete, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(symbol, interval, open_time) do update set
+              open = excluded.open,
+              high = excluded.high,
+              low = excluded.low,
+              close = excluded.close,
+              quote_volume = excluded.quote_volume,
+              is_complete = excluded.is_complete,
+              updated_at = excluded.updated_at
+            """,
+            (
+                str(row["symbol"]),
+                interval,
+                _dt(open_time),
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+                float(row["quote_volume"]),
+                int(bool(row["is_complete"])),
+                _dt(datetime.now().astimezone()),
+            ),
+        )
+        self.connection.commit()
+
+    def list_market_bars(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        validate_interval(interval)
+        clauses = ["symbol = ?", "interval = ?"]
+        values: list[object] = [symbol, interval]
+        if start_time is not None:
+            clauses.append("open_time >= ?")
+            values.append(_dt(start_time))
+        if end_time is not None:
+            clauses.append("open_time <= ?")
+            values.append(_dt(end_time))
+        sql = f"""
+            select symbol, interval, open_time, open, high, low, close, quote_volume, is_complete
+            from market_bars
+            where {' and '.join(clauses)}
+            order by open_time
+        """
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError("limit must be positive")
+            sql += " limit ?"
+            values.append(limit)
+        rows = self.connection.execute(sql, tuple(values)).fetchall()
+        return [
+            {
+                "symbol": row["symbol"],
+                "interval": row["interval"],
+                "open_time": _parse_dt(row["open_time"]),
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "quote_volume": row["quote_volume"],
+                "is_complete": bool(row["is_complete"]),
+            }
+            for row in rows
+        ]
+
+    def get_market_cursor(self, *, symbol: str, interval: str) -> datetime | None:
+        validate_interval(interval)
+        row = self.connection.execute(
+            """
+            select last_open_time
+            from market_cursors
+            where symbol = ? and interval = ?
+            """,
+            (symbol, interval),
+        ).fetchone()
+        if row is None:
+            return None
+        return _parse_dt(row["last_open_time"])
+
+    def advance_market_cursor(self, *, symbol: str, interval: str, open_time: datetime) -> None:
+        validate_interval(interval)
+        current = self.get_market_cursor(symbol=symbol, interval=interval)
+        if current is not None and open_time <= current:
+            return
+        self.connection.execute(
+            """
+            insert into market_cursors(symbol, interval, last_open_time, updated_at)
+            values (?, ?, ?, ?)
+            on conflict(symbol, interval) do update set
+              last_open_time = excluded.last_open_time,
+              updated_at = excluded.updated_at
+            """,
+            (symbol, interval, _dt(open_time), _dt(datetime.now().astimezone())),
+        )
+        self.connection.commit()

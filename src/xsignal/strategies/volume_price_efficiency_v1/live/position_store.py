@@ -21,6 +21,7 @@ class LivePositionRecord:
     add_count: int
     active_stop_client_order_id: str | None
     last_decision_open_time: datetime | None
+    strategy_interval: str | None = None
 
 
 def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
@@ -36,7 +37,8 @@ def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
           next_add_trigger = ?,
           add_count = ?,
           active_stop_client_order_id = ?,
-          last_decision_open_time = ?
+          last_decision_open_time = ?,
+          strategy_interval = ?
         where position_id = ?
         """,
         (
@@ -50,6 +52,7 @@ def update_live_position(store: LiveStore, record: LivePositionRecord) -> None:
             record.add_count,
             record.active_stop_client_order_id,
             _dt(record.last_decision_open_time),
+            record.strategy_interval,
             record.position_id,
         ),
     )
@@ -99,6 +102,7 @@ def _from_row(row) -> LivePositionRecord:
         add_count=int(row["add_count"] or 0),
         active_stop_client_order_id=row["active_stop_client_order_id"],
         last_decision_open_time=_parse_dt(row["last_decision_open_time"]),
+        strategy_interval=row["strategy_interval"],
     )
 
 
