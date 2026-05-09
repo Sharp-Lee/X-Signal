@@ -95,13 +95,11 @@ class RealtimeStrategyService:
         if not np.isfinite(atr) or atr <= 0:
             atr = np.nan
 
-        account = self.account_provider()
         metadata = self.metadata_by_symbol.get(event.symbol)
         stop_updates, adds = self._maintain_symbol_position(
             event=event,
             atr=float(atr) if np.isfinite(atr) else None,
             metadata=metadata,
-            account=account,
             now=self.now_provider(),
         )
 
@@ -126,7 +124,6 @@ class RealtimeStrategyService:
             event=event,
             atr=float(atr),
             metadata=metadata,
-            account=account,
             now=self.now_provider(),
         )
         return RealtimeEventResult(
@@ -142,7 +139,6 @@ class RealtimeStrategyService:
         event: KlineStreamEvent,
         atr: float | None,
         metadata: SymbolMetadata | None,
-        account: AccountSnapshot,
         now: datetime,
     ) -> tuple[int, int]:
         stop_updates = 0
@@ -179,6 +175,7 @@ class RealtimeStrategyService:
                 and event.close >= updated_record.next_add_trigger
             ):
                 add_notional = updated_record.quantity * event.close
+                account = self.account_provider()
                 if _risk_accepted(
                     config=self.config,
                     environment=self.environment,
@@ -211,9 +208,9 @@ class RealtimeStrategyService:
         event: KlineStreamEvent,
         atr: float,
         metadata: SymbolMetadata,
-        account: AccountSnapshot,
         now: datetime,
     ) -> bool:
+        account = self.account_provider()
         notional = size_entry_notional(self.config, account)
         if notional <= 0:
             return False
