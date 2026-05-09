@@ -52,6 +52,17 @@ class FakeSeedClient:
         return [_kline(1778313600000, 1778327999999)]
 
 
+class RateLimitedSeedClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def request(self, method, path, *, signed=False, params=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise BinanceApiError(status=429, code=-1003, message="too many requests")
+        return [_kline(1778313600000, 1778327999999)]
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.bars = []
@@ -248,6 +259,26 @@ def test_seed_rolling_buffers_fetches_each_interval_and_symbol():
     )
     assert len(client.calls) == 4
     assert {call[3]["interval"] for call in client.calls} == {"1h", "4h"}
+
+
+def test_seed_rolling_buffers_backs_off_and_retries_rate_limits(monkeypatch):
+    client = RateLimitedSeedClient()
+    sleeps = []
+    monkeypatch.setattr(stream_daemon_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    buffers = seed_rolling_buffers(
+        client,
+        symbols=["BTCUSDT"],
+        intervals=["1h"],
+        lookback_bars=120,
+        server_time_ms=1778330000000,
+        max_bars=120,
+        rate_limit_backoff_seconds=7,
+    )
+
+    assert client.calls == 2
+    assert sleeps == [7]
+    assert buffers["1h"].to_arrays().symbols == ("BTCUSDT",)
 
 
 def test_recover_symbols_1m_gap_uses_slower_recovery_sleep(monkeypatch):

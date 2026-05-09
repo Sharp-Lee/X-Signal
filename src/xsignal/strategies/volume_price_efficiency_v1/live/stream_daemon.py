@@ -138,6 +138,7 @@ def seed_rolling_buffers(
     server_time_ms: int,
     max_bars: int,
     seed_sleep_ms: int = 0,
+    rate_limit_backoff_seconds: float = 60.0,
 ) -> dict[str, RollingBarBuffer]:
     buffers = {
         interval: RollingBarBuffer(interval=interval, max_bars=max_bars)
@@ -145,13 +146,26 @@ def seed_rolling_buffers(
     }
     for interval, buffer in buffers.items():
         for symbol in symbols:
-            rows = fetch_closed_klines(
-                rest_client,
-                symbol=symbol,
-                interval=interval,
-                limit=lookback_bars,
-                server_time_ms=server_time_ms,
-            )
+            while True:
+                try:
+                    rows = fetch_closed_klines(
+                        rest_client,
+                        symbol=symbol,
+                        interval=interval,
+                        limit=lookback_bars,
+                        server_time_ms=server_time_ms,
+                    )
+                    break
+                except BinanceApiError as exc:
+                    if not _is_rate_limit_error(exc):
+                        raise
+                    _print_event(
+                        "seed_rate_limited",
+                        symbol=symbol,
+                        interval=interval,
+                        backoff_seconds=rate_limit_backoff_seconds,
+                    )
+                    time.sleep(rate_limit_backoff_seconds)
             buffer.seed_rows(rows)
             if seed_sleep_ms > 0:
                 time.sleep(seed_sleep_ms / 1000)
@@ -192,6 +206,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         server_time_ms=server_time_ms,
         max_bars=config.lookback_bars,
         seed_sleep_ms=config.seed_sleep_ms,
+        rate_limit_backoff_seconds=config.rate_limit_backoff_seconds,
     )
     _print_event("seed_finished", mode=config.mode, symbols=len(symbols))
     _print_event(
@@ -392,12 +407,16 @@ def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService
 
 
 def _stream_error_backoff_seconds(exc: Exception, config: StreamDaemonConfig) -> float:
-    if isinstance(exc, BinanceApiError) and (exc.status == 429 or exc.code == -1003):
+    if isinstance(exc, BinanceApiError) and _is_rate_limit_error(exc):
         return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
     text = str(exc)
     if "-1003" in text or " 429 " in text:
         return max(config.reconnect_backoff_seconds, config.rate_limit_backoff_seconds)
     return config.reconnect_backoff_seconds
+
+
+def _is_rate_limit_error(exc: BinanceApiError) -> bool:
+    return exc.status == 429 or exc.code == -1003
 
 
 def _recover_symbols_1m_gap(
