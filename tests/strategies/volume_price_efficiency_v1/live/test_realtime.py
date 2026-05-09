@@ -572,6 +572,30 @@ def test_closed_event_with_signal_opens_entry_and_protective_stop(tmp_path):
     assert get_live_position(store, position["position_id"]).strategy_interval == "1h"
 
 
+def test_closed_bar_batch_runs_signal_checks_once_per_batch(tmp_path):
+    service, store, broker = _service(tmp_path, signal_value=True)
+    calls = []
+
+    def signal_mask(arrays, config):
+        calls.append(arrays.symbols)
+        return np.full(arrays.open.shape, True)
+
+    service.signal_mask_builder = signal_mask
+
+    result = service.process_closed_bar_batch(
+        [
+            _event(closed=True, high=110.0, close=106.0),
+        ],
+        allow_entry=True,
+        allow_pyramid_add=True,
+        allow_stop_replace=True,
+    )
+
+    assert result.entries == 1
+    assert calls == [("BTCUSDT",)]
+    assert [call[0] for call in broker.calls] == ["market_buy", "place_stop_market_close"]
+
+
 def test_closed_bar_can_update_buffer_without_opening_historical_entry(tmp_path):
     service, store, broker = _service(tmp_path, signal_value=True)
 

@@ -183,6 +183,36 @@ class RealtimeStrategyService:
             adds=adds,
         )
 
+    def process_closed_bar_batch(
+        self,
+        events: list[KlineStreamEvent],
+        *,
+        allow_entry: bool = True,
+        allow_pyramid_add: bool = True,
+        allow_stop_replace: bool = True,
+    ) -> RealtimeEventResult:
+        entries = 0
+        stop_updates = 0
+        adds = 0
+        checked = False
+        for event in events:
+            result = self.process_closed_bar(
+                event,
+                allow_entry=allow_entry,
+                allow_pyramid_add=allow_pyramid_add,
+                allow_stop_replace=allow_stop_replace,
+            )
+            checked = checked or result.closed_signal_checked
+            entries += result.entries
+            stop_updates += result.stop_updates
+            adds += result.adds
+        return RealtimeEventResult(
+            closed_signal_checked=checked,
+            entries=entries,
+            stop_updates=stop_updates,
+            adds=adds,
+        )
+
     def _maintain_symbol_position(
         self,
         *,
