@@ -510,6 +510,16 @@ proactively rotated before Binance's 24-hour hard disconnect: by default the
 daemon reconnects after 23 hours with up to 30 minutes of deterministic jitter
 per stream chunk. A `stream_rotation_due` log line is therefore expected daily.
 
+The daemon also opens one Binance user data WebSocket by default. This private
+stream consumes `ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE` events for the same
+strategy-owned `XV1...` client order ids persisted before submission. Stop fills
+close the matching local position immediately, stop cancellations resolve the
+old stop intent without error-locking the position, and account position updates
+sync local quantity/entry price after fills. The listen key is kept alive every
+30 minutes by default. Operators can pass `--disable-user-data-stream` for a
+market-data-only rehearsal, or adjust the keepalive cadence with
+`--user-data-keepalive-interval-seconds`.
+
 On startup and before every WebSocket reconnect, gap recovery is limited to
 symbols with active strategy positions. For those symbols, the daemon reads the
 persisted `1m` cursor, fetches any missing closed `1m` bars through REST, stores

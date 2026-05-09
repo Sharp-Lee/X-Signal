@@ -306,6 +306,9 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "3.5",
             "--closed-poll-fetch-limit",
             "7",
+            "--user-data-keepalive-interval-seconds",
+            "1200",
+            "--disable-user-data-stream",
             "--stop-after-events",
             "3",
         ]
@@ -324,6 +327,8 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.closed_poll_sleep_ms == 30
     assert args.closed_poll_grace_seconds == 3.5
     assert args.closed_poll_fetch_limit == 7
+    assert args.user_data_keepalive_interval_seconds == 1200
+    assert args.disable_user_data_stream
     assert args.stop_after_events == 3
 
 
@@ -823,6 +828,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
         closed_poll_sleep_ms=30,
         closed_poll_grace_seconds=3.5,
         closed_poll_fetch_limit=7,
+        user_data_keepalive_interval_seconds=1200,
+        enable_user_data_stream=False,
         credentials=object(),
         daemon_runner=fake_runner,
     )
@@ -837,6 +844,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
     assert calls[0]["config"].closed_poll_sleep_ms == 30
     assert calls[0]["config"].closed_poll_grace_seconds == 3.5
     assert calls[0]["config"].closed_poll_fetch_limit == 7
+    assert calls[0]["config"].user_data_keepalive_interval_seconds == 1200
+    assert calls[0]["config"].enable_user_data_stream is False
     assert calls[0]["credentials"] is not None
 
 

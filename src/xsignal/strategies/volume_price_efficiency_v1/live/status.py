@@ -135,6 +135,7 @@ def parse_journal_summary(output: str) -> dict[str, int]:
             summary["reconcile_error_since_clean"] = 0
             summary["stream_errors_since_clean"] = 0
             summary["rest_429_since_clean"] = 0
+            summary["user_data_stream_errors_since_clean"] = 0
         if "reconcile_pass" in line and '"status": "error"' in line:
             summary["reconcile_error"] += 1
             summary["reconcile_error_since_clean"] += 1
@@ -146,6 +147,11 @@ def parse_journal_summary(output: str) -> dict[str, int]:
             summary["rest_429_since_clean"] += 1
         if '"event": "stream_connected"' in line:
             summary["stream_connected"] += 1
+        if '"event": "user_data_stream_connected"' in line:
+            summary["user_data_stream_connected"] += 1
+        if '"event": "user_data_stream_error"' in line:
+            summary["user_data_stream_errors"] += 1
+            summary["user_data_stream_errors_since_clean"] += 1
         if '"event": "strategy_action"' in line:
             summary["strategy_actions"] += 1
     return summary
@@ -158,6 +164,9 @@ def _empty_journal_summary() -> dict[str, int]:
         "reconcile_error_since_clean": 0,
         "stream_errors": 0,
         "stream_errors_since_clean": 0,
+        "user_data_stream_connected": 0,
+        "user_data_stream_errors": 0,
+        "user_data_stream_errors_since_clean": 0,
         "rest_429": 0,
         "rest_429_since_clean": 0,
         "stream_connected": 0,
@@ -304,6 +313,13 @@ def _warnings(
             warnings.append("recent_rest_429")
         if int(journal.get("stream_errors_since_clean", journal.get("stream_errors", 0))) > 0:
             warnings.append("recent_stream_errors")
+        if int(
+            journal.get(
+                "user_data_stream_errors_since_clean",
+                journal.get("user_data_stream_errors", 0),
+            )
+        ) > 0:
+            warnings.append("recent_user_data_stream_errors")
         if int(journal.get("reconcile_error_since_clean", journal.get("reconcile_error", 0))) > 0:
             warnings.append("recent_reconcile_errors")
         if int(journal.get("reconcile_clean", 0)) == 0:

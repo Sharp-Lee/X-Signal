@@ -35,7 +35,8 @@ Expected healthy state:
 
 - `OVERALL OK`
 - `SERVICE active=True live_active=False live_guard=False`
-- `SOCKETS` matches the full-universe stream chunks, currently usually `3`
+- `SOCKETS` matches the full-universe market chunks plus the user data stream,
+  currently usually `4`
 - socket `recv_q=0` and `send_q=0`
 - `UNRESOLVED_ORDER_INTENTS 0`
 - `ERROR_LOCKED_POSITIONS 0`
@@ -74,6 +75,15 @@ Binance's 24-hour hard disconnect using the defaults:
 - `--stream-rotation-jitter-seconds 1800`
 
 A daily `stream_rotation_due` log line is normal.
+
+The daemon also opens one Binance user data WebSocket. It receives
+`ORDER_TRADE_UPDATE` and `ACCOUNT_UPDATE` events for strategy-owned orders,
+using the persisted `XV1...` client order ids as the join key into local SQLite.
+This closes local positions as soon as a strategy stop fill is observed,
+resolves cancelled replaced stops without treating them as errors, and syncs
+local quantity/entry price after entry or pyramid fills. The listen key is kept
+alive every 30 minutes by default. For market-data-only rehearsals, start the
+daemon with `--disable-user-data-stream`.
 
 ## Startup Recovery Semantics
 
@@ -124,6 +134,9 @@ stream_connected purpose=full_universe_market_data symbols=200
 stream_connected purpose=full_universe_market_data symbols=200
 stream_connected purpose=full_universe_market_data symbols=<remaining>
 ```
+
+One additional user data WebSocket connection is expected after startup. It is
+not part of the full-universe market chunk count.
 
 4. Confirm the post-restart state is still clean:
 

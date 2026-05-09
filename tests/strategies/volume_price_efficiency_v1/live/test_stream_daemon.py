@@ -13,6 +13,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     StreamUrlSpec,
     _consume_stream_url,
+    _build_user_data_tasks,
     _next_stream_message_or_rotate,
     _poll_closed_1m_once_async,
     _process_closed_1m_event,
@@ -729,6 +730,50 @@ def test_stream_daemon_starts_full_universe_stream_without_closed_poll_task(monk
     assert created == [("full_universe_ws", ("BTCUSDT",))]
 
 
+def test_stream_daemon_starts_user_data_stream_task_by_default(monkeypatch):
+    created = []
+
+    async def fake_user_data_stream(**kwargs):
+        created.append((kwargs["mode"], kwargs["keepalive_interval_seconds"]))
+        kwargs["stop_event"].set()
+
+    monkeypatch.setattr(stream_daemon_module, "run_user_data_stream", fake_user_data_stream)
+
+    async def run() -> None:
+        stop_event = asyncio.Event()
+        tasks = _build_user_data_tasks(
+            store=object(),
+            broker=object(),
+            service=object(),
+            mode="testnet",
+            stop_event=stop_event,
+            config=StreamDaemonConfig(mode="testnet", db_path="live.sqlite"),
+        )
+        await asyncio.gather(*tasks)
+
+    asyncio.run(run())
+
+    assert created == [("testnet", 1800.0)]
+
+
+def test_stream_daemon_can_disable_user_data_stream_task():
+    async def run() -> list:
+        return _build_user_data_tasks(
+            store=object(),
+            broker=object(),
+            service=object(),
+            mode="testnet",
+            stop_event=asyncio.Event(),
+            config=StreamDaemonConfig(
+                mode="testnet",
+                db_path="live.sqlite",
+                enable_user_data_stream=False,
+            ),
+        )
+
+    assert asyncio.run(run()) == []
+
+
 def test_startup_recovery_only_recovers_active_position_symbols(monkeypatch, tmp_path):
     recovered = []
 
@@ -782,13 +827,14 @@ def test_startup_recovery_only_recovers_active_position_symbols(monkeypatch, tmp
 
     result = asyncio.run(
         stream_daemon_module.run_stream_daemon_async(
-            config=StreamDaemonConfig(
-                mode="testnet",
-                db_path=tmp_path / "live.sqlite",
-                reconcile_interval_seconds=0,
-            ),
-            credentials=object(),
-        )
+                config=StreamDaemonConfig(
+                    mode="testnet",
+                    db_path=tmp_path / "live.sqlite",
+                    reconcile_interval_seconds=0,
+                    enable_user_data_stream=False,
+                ),
+                credentials=object(),
+            )
     )
 
     assert result == 0

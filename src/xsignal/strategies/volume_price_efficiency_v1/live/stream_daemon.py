@@ -41,6 +41,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.recovery import (
     replay_closed_1m_events,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
+from xsignal.strategies.volume_price_efficiency_v1.live.user_data import run_user_data_stream
 from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
     BINANCE_USD_FUTURES_LIVE_WS_BASE_URL,
     BINANCE_USD_FUTURES_TESTNET_WS_BASE_URL,
@@ -86,6 +87,8 @@ class StreamDaemonConfig:
     closed_poll_grace_seconds: float = 2.0
     closed_poll_fetch_limit: int = 99
     stop_after_events: int | None = None
+    enable_user_data_stream: bool = True
+    user_data_keepalive_interval_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         if self.mode not in {"testnet", "live"}:
@@ -110,6 +113,8 @@ class StreamDaemonConfig:
             raise ValueError("closed_poll_grace_seconds must be non-negative")
         if self.closed_poll_fetch_limit <= 0:
             raise ValueError("closed_poll_fetch_limit must be positive")
+        if self.user_data_keepalive_interval_seconds <= 0:
+            raise ValueError("user_data_keepalive_interval_seconds must be positive")
         for interval in self.intervals:
             validate_interval(interval)
 
@@ -402,6 +407,16 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         config=config,
         recovery_lock=recovery_lock,
     )
+    tasks.extend(
+        _build_user_data_tasks(
+            store=store,
+            broker=broker,
+            service=service,
+            mode=config.mode,
+            stop_event=stop_event,
+            config=config,
+        )
+    )
     if config.reconcile_interval_seconds > 0:
         tasks.append(
             asyncio.create_task(
@@ -447,6 +462,32 @@ def _build_market_data_tasks(
                 counter=counter,
                 config=config,
                 recovery_lock=recovery_lock,
+            )
+        )
+    ]
+
+
+def _build_user_data_tasks(
+    *,
+    store: LiveStore,
+    broker,
+    service: RealtimeStrategyService,
+    mode: str,
+    stop_event: asyncio.Event,
+    config: StreamDaemonConfig,
+) -> list[asyncio.Task]:
+    if not config.enable_user_data_stream:
+        return []
+    return [
+        asyncio.create_task(
+            run_user_data_stream(
+                store=store,
+                broker=broker,
+                mode=mode,
+                service=service,
+                stop_event=stop_event,
+                keepalive_interval_seconds=config.user_data_keepalive_interval_seconds,
+                reconnect_backoff_seconds=config.reconnect_backoff_seconds,
             )
         )
     ]

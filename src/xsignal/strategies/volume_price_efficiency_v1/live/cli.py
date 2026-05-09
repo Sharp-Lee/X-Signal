@@ -146,6 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--closed-poll-grace-seconds", type=float, default=2.0)
     stream_daemon.add_argument("--closed-poll-fetch-limit", type=int, default=99)
     stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
+    stream_daemon.add_argument("--disable-user-data-stream", action="store_true")
+    stream_daemon.add_argument("--user-data-keepalive-interval-seconds", type=float, default=1800.0)
     stream_daemon.add_argument("--env-file", type=Path)
     stream_daemon.add_argument("--stop-after-events", type=int)
     stream_daemon.add_argument("--i-understand-live-order", action="store_true")
@@ -679,6 +681,8 @@ def run_stream_daemon_command(
     max_streams: int | None = None,
     stream_max_lifetime_seconds: float | None = None,
     stream_rotation_jitter_seconds: float | None = None,
+    enable_user_data_stream: bool = True,
+    user_data_keepalive_interval_seconds: float = 1800.0,
     credentials=None,
     daemon_runner=run_stream_daemon,
 ) -> int:
@@ -721,6 +725,8 @@ def run_stream_daemon_command(
         closed_poll_fetch_limit=closed_poll_fetch_limit,
         reconcile_interval_seconds=reconcile_interval_seconds,
         stop_after_events=stop_after_events,
+        enable_user_data_stream=enable_user_data_stream,
+        user_data_keepalive_interval_seconds=user_data_keepalive_interval_seconds,
     )
     return daemon_runner(config=config, credentials=credentials)
 
@@ -826,6 +832,8 @@ def main(argv: list[str] | None = None) -> int:
             max_streams=args.max_streams,
             stream_max_lifetime_seconds=args.stream_max_lifetime_seconds,
             stream_rotation_jitter_seconds=args.stream_rotation_jitter_seconds,
+            enable_user_data_stream=not args.disable_user_data_stream,
+            user_data_keepalive_interval_seconds=args.user_data_keepalive_interval_seconds,
         )
     if args.command == "live-smoke":
         return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)
