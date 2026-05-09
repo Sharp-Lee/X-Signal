@@ -125,15 +125,11 @@ def parse_socket_rows(output: str) -> list[dict[str, object]]:
 
 
 def parse_journal_summary(output: str) -> dict[str, int]:
-    summary = {
-        "reconcile_clean": 0,
-        "reconcile_error": 0,
-        "stream_errors": 0,
-        "rest_429": 0,
-        "stream_connected": 0,
-        "strategy_actions": 0,
-    }
+    summary = _empty_journal_summary()
     for line in output.splitlines():
+        if "Started xsignal-vpe-" in line and "stream-daemon.service" in line:
+            summary = _empty_journal_summary()
+            continue
         if "reconcile_pass" in line and '"status": "clean"' in line:
             summary["reconcile_clean"] += 1
         if "reconcile_pass" in line and '"status": "error"' in line:
@@ -147,6 +143,17 @@ def parse_journal_summary(output: str) -> dict[str, int]:
         if '"event": "strategy_action"' in line:
             summary["strategy_actions"] += 1
     return summary
+
+
+def _empty_journal_summary() -> dict[str, int]:
+    return {
+        "reconcile_clean": 0,
+        "reconcile_error": 0,
+        "stream_errors": 0,
+        "rest_429": 0,
+        "stream_connected": 0,
+        "strategy_actions": 0,
+    }
 
 
 def render_status_text(snapshot: dict[str, object]) -> str:

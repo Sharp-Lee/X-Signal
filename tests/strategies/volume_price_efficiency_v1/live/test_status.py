@@ -10,6 +10,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.models import (
 from xsignal.strategies.volume_price_efficiency_v1.live.status import (
     build_status_snapshot,
     collect_system_snapshot,
+    parse_journal_summary,
     parse_socket_rows,
     render_status_text,
 )
@@ -223,6 +224,21 @@ ESTAB 47216  3           10.8.0.3:52206   35.73.243.130:443  users:(("xsignal",p
             "peer": "35.73.243.130:443",
         },
     ]
+
+
+def test_parse_journal_summary_uses_latest_service_start_window():
+    summary = parse_journal_summary(
+        """
+May 09 21:05:46 host xsignal-vpe-live[1]: {"event": "stream_error", "error": "old"}
+May 09 21:06:39 host systemd[1]: Started xsignal-vpe-testnet-stream-daemon.service - X-Signal VPE testnet realtime WebSocket trading daemon.
+May 09 21:06:40 host xsignal-vpe-live[2]: {"entry_gate": {"allow_entries": true, "reasons": []}, "errors": 0, "event": "reconcile_pass", "status": "clean"}
+May 09 21:06:41 host xsignal-vpe-live[2]: {"event": "stream_connected", "url": "wss://stream.binancefuture.com/stream"}
+        """
+    )
+
+    assert summary["stream_errors"] == 0
+    assert summary["reconcile_clean"] == 1
+    assert summary["stream_connected"] == 1
 
 
 def test_collect_system_snapshot_degrades_when_system_commands_are_unavailable(tmp_path):
