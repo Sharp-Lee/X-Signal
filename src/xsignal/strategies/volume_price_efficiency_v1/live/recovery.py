@@ -71,12 +71,13 @@ def replay_closed_1m_events(
 ) -> ReplayResult:
     source_bars = 0
     aggregated_bars = 0
+    latest_cursor_by_symbol: dict[str, datetime] = {}
     for event in sorted(events, key=lambda item: (item.symbol, item.open_time)):
         if event.interval != "1m" or not event.is_closed:
             continue
         source_bars += 1
-        store.upsert_market_bar(market_bar_from_event(event))
-        store.advance_market_cursor(symbol=event.symbol, interval="1m", open_time=event.open_time)
+        store.upsert_market_bar(market_bar_from_event(event), commit=False)
+        latest_cursor_by_symbol[event.symbol] = event.open_time
         if sink is not None:
             sink.process_price_event(
                 event,
@@ -85,7 +86,7 @@ def replay_closed_1m_events(
             )
         for aggregate in aggregator.apply_1m_event(event):
             aggregated_bars += 1
-            store.upsert_market_bar(market_bar_from_event(aggregate))
+            store.upsert_market_bar(market_bar_from_event(aggregate), commit=False)
             if sink is not None:
                 sink.process_closed_bar(
                     aggregate,
@@ -93,6 +94,15 @@ def replay_closed_1m_events(
                     allow_pyramid_add=allow_pyramid_add,
                     allow_stop_replace=False,
                 )
+    for symbol, open_time in latest_cursor_by_symbol.items():
+        store.advance_market_cursor(
+            symbol=symbol,
+            interval="1m",
+            open_time=open_time,
+            commit=False,
+        )
+    if source_bars or aggregated_bars or latest_cursor_by_symbol:
+        store.connection.commit()
     return ReplayResult(source_bars=source_bars, aggregated_bars=aggregated_bars)
 
 

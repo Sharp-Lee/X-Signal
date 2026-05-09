@@ -444,7 +444,7 @@ class LiveStore:
             captured_at=_parse_dt(row["captured_at"]),
         )
 
-    def upsert_market_bar(self, row: dict[str, object]) -> None:
+    def upsert_market_bar(self, row: dict[str, object], *, commit: bool = True) -> None:
         interval = validate_interval(str(row["interval"]))
         open_time = row["open_time"]
         if not isinstance(open_time, datetime):
@@ -477,7 +477,8 @@ class LiveStore:
                 _dt(datetime.now().astimezone()),
             ),
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
 
     def list_market_bars(
         self,
@@ -538,7 +539,14 @@ class LiveStore:
             return None
         return _parse_dt(row["last_open_time"])
 
-    def advance_market_cursor(self, *, symbol: str, interval: str, open_time: datetime) -> None:
+    def advance_market_cursor(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        open_time: datetime,
+        commit: bool = True,
+    ) -> None:
         validate_interval(interval)
         current = self.get_market_cursor(symbol=symbol, interval=interval)
         if current is not None and open_time <= current:
@@ -553,4 +561,5 @@ class LiveStore:
             """,
             (symbol, interval, _dt(open_time), _dt(datetime.now().astimezone())),
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
