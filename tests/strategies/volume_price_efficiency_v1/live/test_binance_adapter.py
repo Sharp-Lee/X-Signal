@@ -183,6 +183,32 @@ def test_broker_lists_trading_usdt_perpetual_symbols_and_prices():
     assert broker.get_symbol_price("BTCUSDT") == 123.45
 
 
+def test_broker_lists_trading_usdt_perpetual_metadata_with_one_exchange_info_call():
+    class ExchangeInfoRestClient(FakeRestClient):
+        def request(self, method, path, *, signed=False, params=None):
+            super().request(method, path, signed=signed, params=params)
+            return {
+                "symbols": [
+                    _symbol_payload(symbol="BTCUSDT", quoteAsset="USDT", contractType="PERPETUAL"),
+                    _symbol_payload(symbol="ETHUSDT", quoteAsset="USDT", contractType="PERPETUAL"),
+                    _symbol_payload(
+                        symbol="OLDUSDT",
+                        quoteAsset="USDT",
+                        contractType="PERPETUAL",
+                        status="SETTLING",
+                    ),
+                ]
+            }
+
+    broker = BinanceUsdFuturesTestnetBroker(ExchangeInfoRestClient())
+
+    metadata = broker.list_trading_usdt_perpetual_metadata()
+
+    assert sorted(metadata) == ["BTCUSDT", "ETHUSDT"]
+    assert metadata["BTCUSDT"].status == "TRADING"
+    assert broker.rest_client.calls == [("GET", "/fapi/v1/exchangeInfo", False, {})]
+
+
 def test_broker_changes_margin_type_and_leverage():
     rest_client = FakeRestClient()
     broker = BinanceUsdFuturesTestnetBroker(rest_client)

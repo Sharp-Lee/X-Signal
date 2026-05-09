@@ -94,16 +94,21 @@ class BinanceUsdFuturesTestnetBroker:
         raise ValueError(f"missing Binance symbol metadata for {symbol}")
 
     def list_trading_usdt_perpetual_symbols(self) -> list[str]:
+        return sorted(self.list_trading_usdt_perpetual_metadata())
+
+    def list_trading_usdt_perpetual_metadata(self) -> dict[str, SymbolMetadata]:
         payload = self.rest_client.request("GET", "/fapi/v1/exchangeInfo")
-        symbols = []
+        updated_at = datetime.now(timezone.utc)
+        metadata = {}
         for item in payload.get("symbols", []):
             if (
                 item.get("status") == "TRADING"
                 and item.get("quoteAsset") == "USDT"
                 and item.get("contractType") == "PERPETUAL"
             ):
-                symbols.append(str(item["symbol"]))
-        return sorted(symbols)
+                parsed = parse_symbol_metadata(item, updated_at=updated_at)
+                metadata[parsed.symbol] = parsed
+        return dict(sorted(metadata.items()))
 
     def get_symbol_price(self, symbol: str) -> float:
         payload = self.rest_client.request(

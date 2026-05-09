@@ -113,13 +113,24 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     broker = build_usd_futures_broker(mode=config.mode, credentials=credentials)
     store = LiveStore.open(Path(config.db_path))
     store.initialize()
-    symbols = broker.list_trading_usdt_perpetual_symbols()
+    metadata_by_symbol = broker.list_trading_usdt_perpetual_metadata()
+    symbols = list(metadata_by_symbol)
     if config.max_symbols is not None:
         symbols = symbols[: config.max_symbols]
+        metadata_by_symbol = {
+            symbol: metadata_by_symbol[symbol]
+            for symbol in symbols
+        }
     if not symbols:
         raise RuntimeError("no Binance USD-M symbols selected")
 
     server_time_ms = int(broker.rest_client.request("GET", "/fapi/v1/time")["serverTime"])
+    _print_event(
+        "seed_started",
+        mode=config.mode,
+        symbols=len(symbols),
+        intervals=list(config.intervals),
+    )
     buffers = seed_rolling_buffers(
         broker.rest_client,
         symbols=symbols,
@@ -129,7 +140,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         max_bars=config.lookback_bars,
         seed_sleep_ms=config.seed_sleep_ms,
     )
-    metadata_by_symbol = {symbol: broker.get_symbol_metadata(symbol) for symbol in symbols}
+    _print_event("seed_finished", mode=config.mode, symbols=len(symbols))
     _print_event(
         "stream_daemon_started",
         mode=config.mode,
