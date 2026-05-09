@@ -26,6 +26,14 @@ class OrderIntentType(StrEnum):
     MANUAL_RECONCILE = "MANUAL_RECONCILE"
 
 
+class OrderIntentStatus(StrEnum):
+    PENDING_SUBMIT = "PENDING_SUBMIT"
+    SUBMITTED = "SUBMITTED"
+    EXCHANGE_CONFIRMED = "EXCHANGE_CONFIRMED"
+    RESOLVED = "RESOLVED"
+    ERROR = "ERROR"
+
+
 @dataclass(frozen=True)
 class SymbolMetadata:
     symbol: str
@@ -69,6 +77,12 @@ class OrderIntent:
     price: float | None
     stop_price: float | None
     created_at: datetime
+    status: OrderIntentStatus = OrderIntentStatus.PENDING_SUBMIT
+    exchange_order_id: str | None = None
+    exchange_status: str | None = None
+    submitted_at: datetime | None = None
+    resolved_at: datetime | None = None
+    last_error: str | None = None
 
 
 @dataclass(frozen=True)

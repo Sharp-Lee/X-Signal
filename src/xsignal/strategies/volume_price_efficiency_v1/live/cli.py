@@ -16,6 +16,8 @@ from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.ids import build_client_order_id
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
+from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
+from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
@@ -47,7 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle.add_argument("--symbol", required=True)
     lifecycle.add_argument("--quantity", type=float, default=0.001)
     lifecycle.add_argument("--stop-offset-pct", type=float, default=0.05)
+    lifecycle.add_argument("--db", type=Path)
     lifecycle.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_reconcile = subparsers.add_parser("testnet-reconcile")
+    testnet_reconcile.add_argument("--db", type=Path, required=True)
+    testnet_reconcile.add_argument("--symbol", action="append", required=True)
+    testnet_reconcile.add_argument("--repair", action="store_true")
+    testnet_reconcile.add_argument("--i-understand-testnet-order", action="store_true")
     return parser
 
 
@@ -146,6 +155,7 @@ def run_testnet_lifecycle_command(
     quantity: float,
     stop_offset_pct: float,
     acknowledge: bool,
+    db: Path | None = None,
     rest_client=None,
     broker=None,
     lifecycle_runner=run_testnet_lifecycle,
@@ -170,16 +180,60 @@ def run_testnet_lifecycle_command(
         print(f"{symbol} is not TRADING on Binance USD-M testnet", file=sys.stderr)
         return 2
 
+    store = None
+    if db is not None:
+        store = LiveStore.open(db)
+        store.initialize()
+
     result = lifecycle_runner(
         broker=broker,
         symbol=symbol,
         quantity=quantity,
         stop_offset_pct=stop_offset_pct,
+        store=store,
         price_tick=metadata.price_tick,
         symbol_rules=SymbolRules.from_metadata(metadata),
     )
     print(json.dumps(vars(result), indent=2, sort_keys=True))
     return 0
+
+
+def run_testnet_reconcile_command(
+    *,
+    db: Path,
+    symbols: list[str],
+    repair: bool,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    reconcile_runner=run_reconciliation_pass,
+) -> int:
+    if repair and not acknowledge:
+        print(
+            "testnet-reconcile --repair requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-reconcile",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    summary = reconcile_runner(
+        store=store,
+        broker=broker,
+        symbols=symbols,
+        environment="testnet",
+        allow_repair=repair,
+    )
+    print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+    return 1 if summary.error_count else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -196,6 +250,14 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             quantity=args.quantity,
             stop_offset_pct=args.stop_offset_pct,
+            acknowledge=args.i_understand_testnet_order,
+            db=args.db,
+        )
+    if args.command == "testnet-reconcile":
+        return run_testnet_reconcile_command(
+            db=args.db,
+            symbols=args.symbol,
+            repair=args.repair,
             acknowledge=args.i_understand_testnet_order,
         )
     return 0

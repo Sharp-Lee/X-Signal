@@ -1,8 +1,14 @@
 import pytest
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
-from xsignal.strategies.volume_price_efficiency_v1.live.models import SymbolMetadata
+from xsignal.strategies.volume_price_efficiency_v1.live.models import (
+    OrderIntentStatus,
+    OrderIntentType,
+    PositionState,
+    SymbolMetadata,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
+from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
@@ -317,6 +323,67 @@ def test_run_testnet_lifecycle_treats_close_submit_timeout_as_success_when_flat(
         "get_order",
         "get_position_risk",
     ]
+
+
+def test_run_testnet_lifecycle_persists_order_intents_before_submitting(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+
+    class PersistAssertingBroker(FakeLifecycleBroker):
+        def market_buy(self, *, symbol, quantity, client_order_id):
+            intent = store.get_order_intent_by_client_order_id(client_order_id)
+            assert intent is not None
+            assert intent.intent_type == OrderIntentType.ENTRY
+            assert intent.status == OrderIntentStatus.PENDING_SUBMIT
+            return super().market_buy(
+                symbol=symbol,
+                quantity=quantity,
+                client_order_id=client_order_id,
+            )
+
+        def place_stop_market_close(self, *, symbol, stop_price, client_order_id):
+            intent = store.get_order_intent_by_client_order_id(client_order_id)
+            assert intent is not None
+            assert intent.intent_type == OrderIntentType.STOP_PLACE
+            assert intent.status == OrderIntentStatus.PENDING_SUBMIT
+            return super().place_stop_market_close(
+                symbol=symbol,
+                stop_price=stop_price,
+                client_order_id=client_order_id,
+            )
+
+        def market_sell_reduce_only(self, *, symbol, quantity, client_order_id):
+            intent = store.get_order_intent_by_client_order_id(client_order_id)
+            assert intent is not None
+            assert intent.intent_type == OrderIntentType.MANUAL_RECONCILE
+            assert intent.status == OrderIntentStatus.PENDING_SUBMIT
+            return super().market_sell_reduce_only(
+                symbol=symbol,
+                quantity=quantity,
+                client_order_id=client_order_id,
+            )
+
+    broker = PersistAssertingBroker()
+
+    result = run_testnet_lifecycle(
+        broker=broker,
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        store=store,
+        poll_attempts=3,
+        poll_sleep_seconds=0,
+    )
+
+    entry_intent = store.get_order_intent_by_client_order_id(result.entry_client_order_id)
+    stop_intent = store.get_order_intent_by_client_order_id(result.stop_client_order_id)
+    close_intent = store.get_order_intent_by_client_order_id(result.close_client_order_id)
+
+    assert entry_intent.status == OrderIntentStatus.EXCHANGE_CONFIRMED
+    assert stop_intent.status == OrderIntentStatus.RESOLVED
+    assert stop_intent.exchange_status == "CANCELED_BY_LIFECYCLE"
+    assert close_intent.status == OrderIntentStatus.RESOLVED
+    assert store.get_position_state(entry_intent.position_id) == PositionState.CLOSED
 
 
 def test_run_testnet_lifecycle_treats_empty_final_position_risk_as_flat():

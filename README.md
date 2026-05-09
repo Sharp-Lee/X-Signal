@@ -317,6 +317,7 @@ xsignal-vpe-live testnet-lifecycle \
   --symbol BTCUSDT \
   --quantity 0.001 \
   --stop-offset-pct 0.05 \
+  --db data/live/vpe-testnet.sqlite \
   --i-understand-testnet-order
 ```
 
@@ -325,6 +326,11 @@ The command opens a tiny testnet long, places a `STOP_MARKET closePosition=true`
 protection order, verifies the position and stop, cancels the stop, closes with
 a reduce-only market sell, and verifies the symbol is flat again. Production
 trading remains disabled.
+
+When `--db` is provided, the lifecycle opens a local SQLite store, initializes
+the schema, and persists each deterministic client id before the corresponding
+Binance order submission. The entry, protective stop, and reduce-only close
+intents remain available for restart reconciliation and audit.
 
 Before submitting lifecycle orders, the command loads Binance `exchangeInfo`
 for the symbol and builds local order rules:
@@ -356,3 +362,34 @@ as simple failures:
 This is still a smoke lifecycle, not a full production recovery daemon. The
 production runner should persist every client id before submission and resume
 the same reconciliation flow after process restart.
+
+Restart reconciliation for the testnet path is now available:
+
+```bash
+xsignal-vpe-live testnet-reconcile \
+  --db data/live/vpe-testnet.sqlite \
+  --symbol BTCUSDT
+```
+
+The default command is read-only. It loads unresolved local order intents,
+queries Binance by `newClientOrderId` or `clientAlgoId`, compares local position
+state with Binance position risk and open algo orders, and prints a JSON
+summary. It returns non-zero when a symbol is locked because local and Binance
+state do not match safely.
+
+Repair mode is intentionally explicit because it may submit a testnet
+reduce-only close order for a strategy-owned long position that has no active
+strategy stop:
+
+```bash
+xsignal-vpe-live testnet-reconcile \
+  --db data/live/vpe-testnet.sqlite \
+  --symbol BTCUSDT \
+  --repair \
+  --i-understand-testnet-order
+```
+
+Repair mode does not close unknown positions when local state is `FLAT`; those
+are marked `ERROR_LOCKED` for manual inspection. Production trading remains
+disabled until the same reconciliation guarantees are wired into the long-running
+service loop.

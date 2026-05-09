@@ -8,6 +8,7 @@ import sqlite3
 from xsignal.strategies.volume_price_efficiency_v1.live.models import (
     AccountSnapshot,
     OrderIntent,
+    OrderIntentStatus,
     OrderIntentType,
     PositionState,
     SymbolMetadata,
@@ -20,6 +21,14 @@ def _dt(value: datetime) -> str:
 
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _optional_dt(value: datetime | None) -> str | None:
+    return _dt(value) if value is not None else None
+
+
+def _parse_optional_dt(value: str | None) -> datetime | None:
+    return _parse_dt(value) if value is not None else None
 
 
 class LiveStore:
@@ -39,7 +48,8 @@ class LiveStore:
               position_id text primary key,
               symbol text not null,
               state text not null,
-              created_at text not null default CURRENT_TIMESTAMP
+              created_at text not null default CURRENT_TIMESTAMP,
+              updated_at text
             );
             create table if not exists order_intents (
               intent_id text primary key,
@@ -52,7 +62,13 @@ class LiveStore:
               notional real not null,
               price real,
               stop_price real,
-              created_at text not null
+              created_at text not null,
+              status text not null default 'PENDING_SUBMIT',
+              exchange_order_id text,
+              exchange_status text,
+              submitted_at text,
+              resolved_at text,
+              last_error text
             );
             create table if not exists symbol_metadata (
               symbol text primary key,
@@ -83,8 +99,33 @@ class LiveStore:
             );
             """
         )
+        self._ensure_position_columns()
+        self._ensure_order_intent_columns()
         self._ensure_symbol_metadata_columns()
         self.connection.commit()
+
+    def _ensure_position_columns(self) -> None:
+        columns = {
+            row["name"] for row in self.connection.execute("pragma table_info(positions)").fetchall()
+        }
+        if "updated_at" not in columns:
+            self.connection.execute("alter table positions add column updated_at text")
+
+    def _ensure_order_intent_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute("pragma table_info(order_intents)").fetchall()
+        }
+        for name, definition in {
+            "status": "text not null default 'PENDING_SUBMIT'",
+            "exchange_order_id": "text",
+            "exchange_status": "text",
+            "submitted_at": "text",
+            "resolved_at": "text",
+            "last_error": "text",
+        }.items():
+            if name not in columns:
+                self.connection.execute(f"alter table order_intents add column {name} {definition}")
 
     def _ensure_symbol_metadata_columns(self) -> None:
         columns = {
@@ -107,19 +148,62 @@ class LiveStore:
         row = self.connection.execute("select count(*) from positions").fetchone()
         position_id = f"{symbol}-{row[0] + 1}"
         self.connection.execute(
-            "insert into positions(position_id, symbol, state) values (?, ?, ?)",
-            (position_id, symbol, state.value),
+            "insert into positions(position_id, symbol, state, updated_at) values (?, ?, ?, ?)",
+            (position_id, symbol, state.value, _dt(datetime.now().astimezone())),
         )
         self.connection.commit()
         return position_id
+
+    def get_position_state(self, position_id: str) -> PositionState | None:
+        row = self.connection.execute(
+            "select state from positions where position_id = ?",
+            (position_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return PositionState(row["state"])
+
+    def update_position_state(self, position_id: str, state: PositionState) -> None:
+        self.connection.execute(
+            "update positions set state = ?, updated_at = ? where position_id = ?",
+            (state.value, _dt(datetime.now().astimezone()), position_id),
+        )
+        self.connection.commit()
+
+    def list_positions_by_states(self, states: list[PositionState]) -> list[sqlite3.Row]:
+        if not states:
+            return []
+        placeholders = ",".join("?" for _ in states)
+        return list(
+            self.connection.execute(
+                f"""
+                select position_id, symbol, state, created_at, updated_at
+                from positions
+                where state in ({placeholders})
+                order by created_at, position_id
+                """,
+                tuple(state.value for state in states),
+            ).fetchall()
+        )
 
     def record_order_intent(self, intent: OrderIntent) -> None:
         self.connection.execute(
             """
             insert into order_intents(
               intent_id, position_id, symbol, intent_type, client_order_id,
-              side, quantity, notional, price, stop_price, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              side, quantity, notional, price, stop_price, created_at, status,
+              exchange_order_id, exchange_status, submitted_at, resolved_at, last_error
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(intent_id) do update set
+              position_id = excluded.position_id,
+              symbol = excluded.symbol,
+              intent_type = excluded.intent_type,
+              client_order_id = excluded.client_order_id,
+              side = excluded.side,
+              quantity = excluded.quantity,
+              notional = excluded.notional,
+              price = excluded.price,
+              stop_price = excluded.stop_price
             """,
             (
                 intent.intent_id,
@@ -133,6 +217,12 @@ class LiveStore:
                 intent.price,
                 intent.stop_price,
                 _dt(intent.created_at),
+                intent.status.value,
+                intent.exchange_order_id,
+                intent.exchange_status,
+                _optional_dt(intent.submitted_at),
+                _optional_dt(intent.resolved_at),
+                intent.last_error,
             ),
         )
         self.connection.commit()
@@ -144,6 +234,61 @@ class LiveStore:
         ).fetchone()
         if row is None:
             return None
+        return self._order_intent_from_row(row)
+
+    def get_order_intent_by_client_order_id(self, client_order_id: str) -> OrderIntent | None:
+        row = self.connection.execute(
+            "select * from order_intents where client_order_id = ?",
+            (client_order_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._order_intent_from_row(row)
+
+    def list_unresolved_order_intents(self) -> list[OrderIntent]:
+        rows = self.connection.execute(
+            """
+            select *
+            from order_intents
+            where status not in (?, ?)
+            order by created_at, intent_id
+            """,
+            (OrderIntentStatus.RESOLVED.value, OrderIntentStatus.ERROR.value),
+        ).fetchall()
+        return [self._order_intent_from_row(row) for row in rows]
+
+    def update_order_intent_status(
+        self,
+        *,
+        client_order_id: str,
+        status: OrderIntentStatus,
+        exchange_order_id: str | None = None,
+        exchange_status: str | None = None,
+        submitted_at: datetime | None = None,
+        resolved_at: datetime | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        assignments = ["status = ?"]
+        values: list[object] = [status.value]
+        optional_values = {
+            "exchange_order_id": exchange_order_id,
+            "exchange_status": exchange_status,
+            "submitted_at": _optional_dt(submitted_at),
+            "resolved_at": _optional_dt(resolved_at),
+            "last_error": last_error,
+        }
+        for column, value in optional_values.items():
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        values.append(client_order_id)
+        self.connection.execute(
+            f"update order_intents set {', '.join(assignments)} where client_order_id = ?",
+            tuple(values),
+        )
+        self.connection.commit()
+
+    def _order_intent_from_row(self, row: sqlite3.Row) -> OrderIntent:
         return OrderIntent(
             intent_id=row["intent_id"],
             position_id=row["position_id"],
@@ -156,6 +301,12 @@ class LiveStore:
             price=row["price"],
             stop_price=row["stop_price"],
             created_at=_parse_dt(row["created_at"]),
+            status=OrderIntentStatus(row["status"]),
+            exchange_order_id=row["exchange_order_id"],
+            exchange_status=row["exchange_status"],
+            submitted_at=_parse_optional_dt(row["submitted_at"]),
+            resolved_at=_parse_optional_dt(row["resolved_at"]),
+            last_error=row["last_error"],
         )
 
     def upsert_symbol_metadata(self, metadata: SymbolMetadata) -> None:

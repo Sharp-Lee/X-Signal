@@ -134,6 +134,28 @@ def test_cli_has_guarded_testnet_lifecycle_command():
     assert not args.i_understand_testnet_order
 
 
+def test_cli_has_guarded_testnet_reconcile_command(tmp_path):
+    parser = cli.build_parser()
+    subcommands = parser._subparsers._group_actions[0].choices
+    args = parser.parse_args(
+        [
+            "testnet-reconcile",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "BTCUSDT",
+            "--repair",
+        ]
+    )
+
+    assert "testnet-reconcile" in subcommands
+    assert args.command == "testnet-reconcile"
+    assert args.db == tmp_path / "live.sqlite"
+    assert args.symbol == ["BTCUSDT"]
+    assert args.repair
+    assert not args.i_understand_testnet_order
+
+
 def test_testnet_lifecycle_requires_explicit_acknowledgement(capsys):
     result = cli.run_testnet_lifecycle_command(
         symbol="BTCUSDT",
@@ -215,4 +237,100 @@ def test_testnet_lifecycle_runs_runner_and_prints_result(capsys):
     assert calls[0]["price_tick"] == 0.1
     assert calls[0]["symbol_rules"].market_quantity_step == Decimal("0.00100000")
     assert '"final_position_amount": 0.0' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_lifecycle_passes_store_when_db_is_provided(tmp_path, capsys):
+    class FakeBroker:
+        def get_symbol_metadata(self, symbol):
+            return SymbolMetadata(
+                symbol=symbol,
+                status="TRADING",
+                min_notional=5.0,
+                quantity_step=0.001,
+                price_tick=0.1,
+                supports_stop_market=True,
+                trigger_protect=0.05,
+                updated_at=datetime(2026, 5, 9, tzinfo=timezone.utc),
+            )
+
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["store"].get_position_state("missing") is None
+        return SimpleNamespace(
+            symbol="BTCUSDT",
+            quantity=0.001,
+            stop_offset_pct=0.05,
+            stop_price=95000.0,
+            entry_client_order_id="XV1TE...",
+            stop_client_order_id="XV1TS...",
+            close_client_order_id="XV1TM...",
+            opened_position_amount=0.001,
+            final_position_amount=0.0,
+        )
+
+    result = cli.run_testnet_lifecycle_command(
+        symbol="BTCUSDT",
+        quantity=0.001,
+        stop_offset_pct=0.05,
+        acknowledge=True,
+        db=tmp_path / "live.sqlite",
+        broker=FakeBroker(),
+        lifecycle_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["store"] is not None
+    assert '"symbol": "BTCUSDT"' in captured.out
+
+
+def test_testnet_reconcile_repair_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_reconcile_command(
+        db=tmp_path / "live.sqlite",
+        symbols=["BTCUSDT"],
+        repair=True,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_reconcile_runs_runner_and_prints_summary(tmp_path, capsys):
+    class Summary:
+        error_count = 0
+
+        def to_dict(self):
+            return {
+                "environment": "testnet",
+                "allow_repair": False,
+                "error_count": 0,
+                "findings": [{"symbol": "BTCUSDT", "status": "CLEAN"}],
+            }
+
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return Summary()
+
+    result = cli.run_testnet_reconcile_command(
+        db=tmp_path / "live.sqlite",
+        symbols=["BTCUSDT"],
+        repair=False,
+        acknowledge=False,
+        broker=object(),
+        reconcile_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["environment"] == "testnet"
+    assert not calls[0]["allow_repair"]
+    assert '"status": "CLEAN"' in captured.out
     assert "secret" not in captured.out.lower()
