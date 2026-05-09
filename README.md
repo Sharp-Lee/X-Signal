@@ -434,14 +434,16 @@ current full USDT perpetual universe runs in a few combined-stream connections
 instead of one large socket or dozens of tiny sockets. Each connection is
 proactively rotated before Binance's 24-hour hard disconnect: by default the
 daemon reconnects after 23 hours with up to 30 minutes of deterministic jitter
-per stream chunk. A `stream_rotation_due` log line is therefore expected daily;
-the reconnect path then performs normal `1m` gap recovery before resuming live
-market data.
+per stream chunk. A `stream_rotation_due` log line is therefore expected daily.
 
-On startup and before every WebSocket reconnect, the daemon reads the persisted
-`1m` cursor for each symbol, fetches any missing closed `1m` bars through REST,
-stores them locally, and replays them through the local aggregator. On the very
-first run for a symbol, no historical `1m` gap is fetched; the REST-seeded
+On startup and before every WebSocket reconnect, gap recovery is limited to
+symbols with active strategy positions. For those symbols, the daemon reads the
+persisted `1m` cursor, fetches any missing closed `1m` bars through REST, stores
+them locally, and replays them through the local aggregator so trailing-stop and
+pyramid state can be safely maintained. Symbols without active positions are
+treated like a fresh start: the daemon does not chase missed historical signals
+or backfill their downtime gap before opening the full-universe WebSocket. On
+the very first run for a symbol, no historical `1m` gap is fetched; the REST-seeded
 closed `1h`/`4h`/`1d` buffers provide initial signal context, and local `1m`
 retention begins from that startup point. Recovered historical bars update
 buffers and protective position state, but they do not open delayed entries or

@@ -161,6 +161,14 @@ def _chunk_symbols(symbols: list[str], *, max_streams: int) -> list[tuple[str, .
     ]
 
 
+def _active_recovery_symbols(service: RealtimeStrategyService, symbols: list[str]) -> list[str]:
+    service.refresh_active_symbols()
+    active = set(service.active_symbols())
+    if not active:
+        return []
+    return [symbol for symbol in symbols if symbol in active]
+
+
 def _stream_rotation_deadline(
     spec: StreamUrlSpec,
     *,
@@ -345,16 +353,25 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     stop_event = asyncio.Event()
     recovery_lock = asyncio.Lock()
     counter = _EventCounter(limit=config.stop_after_events)
-    _print_event("startup_recovery_started", mode=config.mode, symbols=len(symbols))
+    startup_recovery_symbols = _active_recovery_symbols(service, symbols)
+    _print_event(
+        "startup_recovery_started",
+        mode=config.mode,
+        symbols=len(startup_recovery_symbols),
+        skipped_symbols=len(symbols) - len(startup_recovery_symbols),
+        universe_symbols=len(symbols),
+    )
 
     async def initial_recovery() -> None:
+        if not startup_recovery_symbols:
+            return
         await _recover_symbols_1m_gap_async(
             recovery_lock=recovery_lock,
             store=store,
             rest_client=broker.rest_client,
             aggregator=aggregator,
             service=service,
-            symbols=symbols,
+            symbols=startup_recovery_symbols,
             intervals=config.intervals,
             recovery_sleep_ms=config.recovery_sleep_ms,
             fetch_limit=config.closed_poll_fetch_limit,
@@ -366,7 +383,13 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         entry_gate=entry_gate,
         action=initial_recovery,
     )
-    _print_event("startup_recovery_finished", mode=config.mode, symbols=len(symbols))
+    _print_event(
+        "startup_recovery_finished",
+        mode=config.mode,
+        symbols=len(startup_recovery_symbols),
+        skipped_symbols=len(symbols) - len(startup_recovery_symbols),
+        universe_symbols=len(symbols),
+    )
     tasks = _build_market_data_tasks(
         store=store,
         rest_client=broker.rest_client,
@@ -660,17 +683,26 @@ async def _consume_full_universe_stream_url(
     while not stop_event.is_set():
         try:
             if needs_recovery:
-                await _recover_symbols_1m_gap_async(
-                    recovery_lock=recovery_lock,
-                    store=store,
-                    rest_client=rest_client,
-                    aggregator=aggregator,
-                    service=service,
-                    symbols=list(spec.symbols),
-                    intervals=config.intervals,
-                    recovery_sleep_ms=config.recovery_sleep_ms,
-                    fetch_limit=config.closed_poll_fetch_limit,
-                )
+                recovery_symbols = _active_recovery_symbols(service, list(spec.symbols))
+                if recovery_symbols:
+                    await _recover_symbols_1m_gap_async(
+                        recovery_lock=recovery_lock,
+                        store=store,
+                        rest_client=rest_client,
+                        aggregator=aggregator,
+                        service=service,
+                        symbols=recovery_symbols,
+                        intervals=config.intervals,
+                        recovery_sleep_ms=config.recovery_sleep_ms,
+                        fetch_limit=config.closed_poll_fetch_limit,
+                    )
+                else:
+                    _print_event(
+                        "market_gap_recovery_skipped",
+                        reason="no_active_positions",
+                        symbols=len(spec.symbols),
+                        purpose="full_universe_market_data",
+                    )
             needs_recovery = True
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
                 _print_event(
@@ -744,17 +776,25 @@ async def _consume_stream_url(
     while not stop_event.is_set():
         try:
             if needs_recovery:
-                await _recover_symbols_1m_gap_async(
-                    recovery_lock=recovery_lock,
-                    store=store,
-                    rest_client=rest_client,
-                    aggregator=aggregator,
-                    service=service,
-                    symbols=list(spec.symbols),
-                    intervals=config.intervals,
-                    recovery_sleep_ms=config.recovery_sleep_ms,
-                    fetch_limit=config.closed_poll_fetch_limit,
-                )
+                recovery_symbols = _active_recovery_symbols(service, list(spec.symbols))
+                if recovery_symbols:
+                    await _recover_symbols_1m_gap_async(
+                        recovery_lock=recovery_lock,
+                        store=store,
+                        rest_client=rest_client,
+                        aggregator=aggregator,
+                        service=service,
+                        symbols=recovery_symbols,
+                        intervals=config.intervals,
+                        recovery_sleep_ms=config.recovery_sleep_ms,
+                        fetch_limit=config.closed_poll_fetch_limit,
+                    )
+                else:
+                    _print_event(
+                        "market_gap_recovery_skipped",
+                        reason="no_active_positions",
+                        symbols=len(spec.symbols),
+                    )
             needs_recovery = True
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
                 _print_event("stream_connected", url=spec.url.split("?streams=", 1)[0])

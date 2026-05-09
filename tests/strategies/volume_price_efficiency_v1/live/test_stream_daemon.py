@@ -192,6 +192,12 @@ class FakeService:
 class ClosedEntryGate:
     allow_entries = False
 
+    def mark_stream_error(self, error: str) -> None:
+        raise AssertionError(f"unexpected stream error: {error}")
+
+    def snapshot(self):
+        return {"allow_entries": False, "reasons": []}
+
 
 class ActiveSymbolService:
     def __init__(self, symbols: set[str]) -> None:
@@ -199,6 +205,15 @@ class ActiveSymbolService:
 
     def has_active_symbol_position(self, symbol: str) -> bool:
         return symbol in self.symbols
+
+    def process_price_event(self, event, *, allow_pyramid_add, allow_stop_replace=True):
+        return RealtimeEventResult(closed_signal_checked=False)
+
+    def active_symbols(self) -> tuple[str, ...]:
+        return tuple(sorted(self.symbols))
+
+    def refresh_active_symbols(self) -> None:
+        return None
 
 
 def _stream_payload(*, symbol: str = "BTCUSDT", closed: bool = False):
@@ -714,6 +729,72 @@ def test_stream_daemon_starts_full_universe_stream_without_closed_poll_task(monk
     assert created == [("full_universe_ws", ("BTCUSDT",))]
 
 
+def test_startup_recovery_only_recovers_active_position_symbols(monkeypatch, tmp_path):
+    recovered = []
+
+    class FakeBroker:
+        rest_client = object()
+
+        def list_trading_usdt_perpetual_metadata(self):
+            return {
+                "BTCUSDT": object(),
+                "ETHUSDT": object(),
+                "SOLUSDT": object(),
+            }
+
+        def get_account_snapshot(self, **kwargs):
+            raise AssertionError("account snapshot is not needed for this test")
+
+    class DaemonStore:
+        def initialize(self) -> None:
+            return None
+
+        def list_recent_market_bars(self, *, symbol, interval, limit):
+            return []
+
+    class ServiceWithOneActiveSymbol:
+        def __init__(self, **kwargs):
+            self.refreshed = 0
+
+        def refresh_active_symbols(self) -> None:
+            self.refreshed += 1
+
+        def active_symbols(self) -> tuple[str, ...]:
+            return ("ETHUSDT",)
+
+    async def fake_recover(**kwargs):
+        recovered.append(tuple(kwargs["symbols"]))
+
+    monkeypatch.setattr(stream_daemon_module, "build_usd_futures_broker", lambda **kwargs: FakeBroker())
+    monkeypatch.setattr(
+        stream_daemon_module.LiveStore,
+        "open",
+        lambda path: DaemonStore(),
+    )
+    monkeypatch.setattr(
+        stream_daemon_module,
+        "run_reconciliation_pass",
+        lambda **kwargs: types.SimpleNamespace(error_count=0),
+    )
+    monkeypatch.setattr(stream_daemon_module, "RealtimeStrategyService", ServiceWithOneActiveSymbol)
+    monkeypatch.setattr(stream_daemon_module, "_recover_symbols_1m_gap_async", fake_recover)
+    monkeypatch.setattr(stream_daemon_module, "_build_market_data_tasks", lambda **kwargs: [])
+
+    result = asyncio.run(
+        stream_daemon_module.run_stream_daemon_async(
+            config=StreamDaemonConfig(
+                mode="testnet",
+                db_path=tmp_path / "live.sqlite",
+                reconcile_interval_seconds=0,
+            ),
+            credentials=object(),
+        )
+    )
+
+    assert result == 0
+    assert recovered == [("ETHUSDT",)]
+
+
 def test_consume_stream_url_can_skip_initial_recovery_after_startup(monkeypatch):
     events = []
 
@@ -818,7 +899,7 @@ def test_full_universe_stream_recovers_gaps_before_connect(monkeypatch):
             store=object(),
             rest_client=object(),
             aggregator=object(),
-            service=ActiveSymbolService(set()),
+            service=ActiveSymbolService({"BTCUSDT"}),
             entry_gate=ClosedEntryGate(),
             stop_event=stop_event,
             counter=counter,
@@ -830,6 +911,69 @@ def test_full_universe_stream_recovers_gaps_before_connect(monkeypatch):
     asyncio.run(run())
 
     assert events[0] == ("recover", ("BTCUSDT",))
+    assert events[1] == ("connect",)
+
+
+def test_full_universe_stream_recovers_only_active_symbol_gaps_before_connect(monkeypatch):
+    events = []
+
+    async def fake_recover(**kwargs):
+        events.append(("recover", tuple(kwargs["symbols"])))
+
+    class OneMessageSocket:
+        def __init__(self):
+            self.sent = False
+
+        async def __aenter__(self):
+            events.append(("connect",))
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return (
+                '{"stream":"ethusdt@kline_1m","data":{"e":"kline","E":1778318492123,'
+                '"s":"ETHUSDT","k":{"t":1778313600000,"T":1778313659999,"s":"ETHUSDT",'
+                '"i":"1m","o":"100","c":"101","h":"102","l":"99","q":"10","x":false}}}'
+            )
+
+    monkeypatch.setattr(stream_daemon_module, "_recover_symbols_1m_gap_async", fake_recover)
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        types.SimpleNamespace(connect=lambda *args, **kwargs: OneMessageSocket()),
+    )
+
+    async def run():
+        stop_event = asyncio.Event()
+        counter = stream_daemon_module._EventCounter(limit=1)
+        await stream_daemon_module._consume_full_universe_stream_url(
+            spec=StreamUrlSpec(
+                url="wss://example",
+                symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+            ),
+            store=object(),
+            rest_client=object(),
+            aggregator=object(),
+            service=ActiveSymbolService({"ETHUSDT"}),
+            entry_gate=ClosedEntryGate(),
+            stop_event=stop_event,
+            counter=counter,
+            config=StreamDaemonConfig(mode="testnet", db_path="live.sqlite"),
+            recovery_lock=asyncio.Lock(),
+            recover_before_connect=True,
+        )
+
+    asyncio.run(run())
+
+    assert events[0] == ("recover", ("ETHUSDT",))
     assert events[1] == ("connect",)
 
 
