@@ -17,7 +17,6 @@ from xsignal.strategies.volume_price_efficiency_v1.live.realtime import Realtime
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
-    BINANCE_MAX_COMBINED_STREAMS,
     BINANCE_USD_FUTURES_LIVE_WS_BASE_URL,
     BINANCE_USD_FUTURES_TESTNET_WS_BASE_URL,
     build_combined_stream_urls,
@@ -27,6 +26,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
 
 
 DEFAULT_REALTIME_INTERVALS = ("1h", "4h", "1d")
+DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 200
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class StreamDaemonConfig:
     intervals: tuple[str, ...] = DEFAULT_REALTIME_INTERVALS
     lookback_bars: int = 120
     max_symbols: int | None = None
-    max_streams: int = BINANCE_MAX_COMBINED_STREAMS
+    max_streams: int = DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION
     reconnect_backoff_seconds: float = 5.0
     reconcile_interval_seconds: float = 300.0
     seed_sleep_ms: int = 20

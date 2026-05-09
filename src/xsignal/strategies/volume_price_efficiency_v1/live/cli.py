@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--db", type=Path, required=True)
     stream_daemon.add_argument("--interval", action="append", default=[])
     stream_daemon.add_argument("--max-symbols", type=int)
+    stream_daemon.add_argument("--max-streams", type=int)
     stream_daemon.add_argument("--lookback-bars", type=int, default=120)
     stream_daemon.add_argument("--seed-sleep-ms", type=int, default=20)
     stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
@@ -410,6 +411,7 @@ def run_stream_daemon_command(
     seed_sleep_ms: int = 20,
     reconcile_interval_seconds: float = 300.0,
     stop_after_events: int | None = None,
+    max_streams: int | None = None,
     credentials=None,
     daemon_runner=run_stream_daemon,
 ) -> int:
@@ -434,6 +436,7 @@ def run_stream_daemon_command(
         intervals=tuple(intervals or DEFAULT_REALTIME_INTERVALS),
         lookback_bars=lookback_bars,
         max_symbols=max_symbols,
+        **({"max_streams": max_streams} if max_streams is not None else {}),
         seed_sleep_ms=seed_sleep_ms,
         reconcile_interval_seconds=reconcile_interval_seconds,
         stop_after_events=stop_after_events,
@@ -487,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             seed_sleep_ms=args.seed_sleep_ms,
             reconcile_interval_seconds=args.reconcile_interval_seconds,
             stop_after_events=args.stop_after_events,
+            max_streams=args.max_streams,
         )
     if args.command == "live-smoke":
         return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)

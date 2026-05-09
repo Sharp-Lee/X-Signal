@@ -43,6 +43,7 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     config = StreamDaemonConfig(mode="testnet", db_path="live.sqlite")
     assert config.intervals == ("1h", "4h", "1d")
     assert config.lookback_bars == 120
+    assert config.max_streams == 200
 
 
 def test_build_daemon_stream_urls_chunks_all_symbols_and_intervals():
