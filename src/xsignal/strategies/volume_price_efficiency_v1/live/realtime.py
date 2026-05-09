@@ -127,6 +127,8 @@ class RealtimeStrategyService:
                 allow_stop_replace=allow_stop_replace,
             )
         buffer.apply_event(event)
+        if not allow_entry and not self._has_active_symbol_position(event.symbol):
+            return RealtimeEventResult(True)
         arrays = buffer.to_arrays()
         if event.symbol not in arrays.symbols:
             return RealtimeEventResult(True, skipped_reason="event_not_in_buffer")

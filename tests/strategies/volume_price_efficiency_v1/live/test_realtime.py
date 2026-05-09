@@ -348,6 +348,33 @@ def test_closed_bar_can_update_buffer_without_opening_historical_entry(tmp_path)
     assert store.list_positions_by_states([PositionState.OPEN]) == []
 
 
+def test_historical_closed_bar_without_active_position_does_not_compute_features(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeRealtimeBroker()
+    service = RealtimeStrategyService(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(),
+        environment="testnet",
+        buffers={"1h": _buffer()},
+        metadata_by_symbol={"BTCUSDT": _metadata()},
+        account_provider=lambda: _account(),
+        now_provider=lambda: NOW,
+        feature_builder=lambda arrays: (_ for _ in ()).throw(AssertionError("no features")),
+        signal_mask_builder=lambda arrays, config: np.full(arrays.open.shape, True),
+    )
+
+    result = service.process_closed_bar(
+        _event(closed=True, high=110.0, close=106.0),
+        allow_entry=False,
+    )
+
+    assert result.closed_signal_checked is True
+    assert result.entries == 0
+    assert not broker.calls
+
+
 def test_closed_event_signal_is_rejected_when_shared_risk_is_exhausted(tmp_path):
     service, store, broker = _service(
         tmp_path,
