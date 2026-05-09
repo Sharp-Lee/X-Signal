@@ -67,18 +67,21 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--symbol", required=True)
     smoke.add_argument("--quantity", type=float, default=0.001)
     smoke.add_argument("--submit-test-order", action="store_true")
+    smoke.add_argument("--env-file", type=Path)
 
     lifecycle = subparsers.add_parser("testnet-lifecycle")
     lifecycle.add_argument("--symbol", required=True)
     lifecycle.add_argument("--quantity", type=float, default=0.001)
     lifecycle.add_argument("--stop-offset-pct", type=float, default=0.05)
     lifecycle.add_argument("--db", type=Path)
+    lifecycle.add_argument("--env-file", type=Path)
     lifecycle.add_argument("--i-understand-testnet-order", action="store_true")
 
     testnet_reconcile = subparsers.add_parser("testnet-reconcile")
     testnet_reconcile.add_argument("--db", type=Path, required=True)
     testnet_reconcile.add_argument("--symbol", action="append", required=True)
     testnet_reconcile.add_argument("--repair", action="store_true")
+    testnet_reconcile.add_argument("--env-file", type=Path)
     testnet_reconcile.add_argument("--i-understand-testnet-order", action="store_true")
 
     testnet_open = subparsers.add_parser("testnet-open-protected")
@@ -86,12 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     testnet_open.add_argument("--symbol", required=True)
     testnet_open.add_argument("--notional", type=float, required=True)
     testnet_open.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_open.add_argument("--env-file", type=Path)
     testnet_open.add_argument("--i-understand-testnet-order", action="store_true")
 
     testnet_close = subparsers.add_parser("testnet-close-protected")
     testnet_close.add_argument("--db", type=Path, required=True)
     testnet_close.add_argument("--symbol", required=True)
     testnet_close.add_argument("--position-id")
+    testnet_close.add_argument("--env-file", type=Path)
     testnet_close.add_argument("--i-understand-testnet-order", action="store_true")
 
     run_cycle = subparsers.add_parser("run-cycle")
@@ -175,10 +180,11 @@ def run_testnet_smoke(
     symbol: str,
     submit_test_order: bool,
     quantity: float,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
 ) -> int:
-    rest_client = rest_client or _build_testnet_rest_client()
+    rest_client = rest_client or _build_testnet_rest_client(env_file=env_file)
     if rest_client is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-smoke",
@@ -234,6 +240,7 @@ def run_testnet_lifecycle_command(
     stop_offset_pct: float,
     acknowledge: bool,
     db: Path | None = None,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     lifecycle_runner=run_testnet_lifecycle,
@@ -244,7 +251,9 @@ def run_testnet_lifecycle_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-lifecycle",
@@ -282,6 +291,7 @@ def run_testnet_reconcile_command(
     symbols: list[str],
     repair: bool,
     acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     reconcile_runner=run_reconciliation_pass,
@@ -292,7 +302,9 @@ def run_testnet_reconcile_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-reconcile",
@@ -321,6 +333,7 @@ def run_testnet_open_protected_command(
     notional: float,
     stop_offset_pct: float,
     acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     rehearsal_runner=open_protected_rehearsal_position,
@@ -331,7 +344,9 @@ def run_testnet_open_protected_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-open-protected",
@@ -359,6 +374,7 @@ def run_testnet_close_protected_command(
     symbol: str,
     position_id: str | None,
     acknowledge: bool,
+    env_file: Path | None = LOCAL_TESTNET_ENV_FILE,
     rest_client=None,
     broker=None,
     rehearsal_runner=close_rehearsal_position,
@@ -369,7 +385,9 @@ def run_testnet_close_protected_command(
             file=sys.stderr,
         )
         return 2
-    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
     if rest_client is None and broker is None:
         print(
             "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-close-protected",
@@ -599,6 +617,7 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             submit_test_order=args.submit_test_order,
             quantity=args.quantity,
+            env_file=args.env_file,
         )
     if args.command == "testnet-lifecycle":
         return run_testnet_lifecycle_command(
@@ -607,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
             stop_offset_pct=args.stop_offset_pct,
             acknowledge=args.i_understand_testnet_order,
             db=args.db,
+            env_file=args.env_file,
         )
     if args.command == "testnet-reconcile":
         return run_testnet_reconcile_command(
@@ -614,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
             symbols=args.symbol,
             repair=args.repair,
             acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
         )
     if args.command == "testnet-open-protected":
         return run_testnet_open_protected_command(
@@ -622,6 +643,7 @@ def main(argv: list[str] | None = None) -> int:
             notional=args.notional,
             stop_offset_pct=args.stop_offset_pct,
             acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
         )
     if args.command == "testnet-close-protected":
         return run_testnet_close_protected_command(
@@ -629,6 +651,7 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             position_id=args.position_id,
             acknowledge=args.i_understand_testnet_order,
+            env_file=args.env_file,
         )
     if args.command == "status":
         return run_status_command(

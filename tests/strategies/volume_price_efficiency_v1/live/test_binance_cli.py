@@ -170,6 +170,8 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
             "8",
             "--stop-offset-pct",
             "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
         ]
     )
     close_args = parser.parse_args(
@@ -181,6 +183,8 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
             "SOLUSDT",
             "--position-id",
             "SOLUSDT-1",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
         ]
     )
 
@@ -191,9 +195,11 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
     assert open_args.symbol == "SOLUSDT"
     assert open_args.notional == 8.0
     assert open_args.stop_offset_pct == 0.05
+    assert open_args.env_file == tmp_path / "binance-testnet.env"
     assert not open_args.i_understand_testnet_order
     assert close_args.command == "testnet-close-protected"
     assert close_args.position_id == "SOLUSDT-1"
+    assert close_args.env_file == tmp_path / "binance-testnet.env"
     assert not close_args.i_understand_testnet_order
 
 
@@ -520,6 +526,50 @@ def test_testnet_open_protected_runs_runner_and_prints_result(tmp_path, capsys):
     assert calls[0]["store"] is not None
     assert '"position_id": "SOLUSDT-1"' in captured.out
     assert "secret" not in captured.out.lower()
+
+
+def test_testnet_open_protected_uses_explicit_env_file(tmp_path, monkeypatch, capsys):
+    env_file = tmp_path / "binance-testnet.env"
+    fake_rest = object()
+    build_calls = []
+    runner_calls = []
+
+    def fake_build_testnet_rest_client(*, env_file=None):
+        build_calls.append(env_file)
+        return fake_rest
+
+    def fake_runner(**kwargs):
+        runner_calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="ADAUSDT",
+            position_id="ADAUSDT-1",
+            quantity=10.0,
+            requested_notional=8.0,
+            effective_notional=8.0,
+            entry_price=0.8,
+            stop_offset_pct=0.05,
+            stop_price=0.76,
+            entry_client_order_id="XV1TE...",
+            stop_client_order_id="XV1TS...",
+        )
+
+    monkeypatch.setattr(cli, "_build_testnet_rest_client", fake_build_testnet_rest_client)
+
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=env_file,
+        acknowledge=True,
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert build_calls == [env_file]
+    assert runner_calls[0]["broker"].rest_client is fake_rest
+    assert '"symbol": "ADAUSDT"' in captured.out
 
 
 def test_testnet_close_protected_runs_runner_and_prints_result(tmp_path, capsys):

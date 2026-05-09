@@ -192,7 +192,7 @@ ssh alpha "sqlite3 /var/lib/xsignal/live/vpe-testnet.sqlite \"select symbol,stat
 Run read-only reconciliation for active symbols:
 
 ```bash
-ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-reconcile --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol BTCUSDT'
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-reconcile --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol BTCUSDT'
 ```
 
 Repeat `--symbol` for each active local position. The expected result is
@@ -219,7 +219,7 @@ ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-status --db /var/lib/xsignal/live
 Open a small protected rehearsal position:
 
 ```bash
-ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-open-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT --notional 8 --stop-offset-pct 0.05 --i-understand-testnet-order'
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-open-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol SOLUSDT --notional 8 --stop-offset-pct 0.05 --i-understand-testnet-order'
 ```
 
 The command persists the local position and deterministic entry/stop client ids
@@ -231,14 +231,14 @@ After opening, run read-only reconciliation for the same symbol and confirm the
 status remains clean:
 
 ```bash
-ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-reconcile --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT'
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-reconcile --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol SOLUSDT'
 ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-status --db /var/lib/xsignal/live/vpe-testnet.sqlite'
 ```
 
 Close the rehearsal position through the audited close path:
 
 ```bash
-ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-close-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT --position-id SOLUSDT-1 --i-understand-testnet-order'
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-close-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol SOLUSDT --position-id SOLUSDT-1 --i-understand-testnet-order'
 ```
 
 The close command cancels the strategy stop, records a `MANUAL_RECONCILE`

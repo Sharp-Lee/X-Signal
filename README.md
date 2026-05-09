@@ -293,6 +293,12 @@ BINANCE_API_KEY=...
 BINANCE_SECRET_KEY=...
 ```
 
+On servers, pass the managed testnet environment file explicitly:
+
+```bash
+--env-file /etc/xsignal/binance-testnet.env
+```
+
 Run a read-only testnet smoke check:
 
 ```bash
@@ -369,6 +375,7 @@ Restart reconciliation for the testnet path is now available:
 ```bash
 xsignal-vpe-live testnet-reconcile \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol BTCUSDT
 ```
 
@@ -385,6 +392,7 @@ strategy stop:
 ```bash
 xsignal-vpe-live testnet-reconcile \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol BTCUSDT \
   --repair \
   --i-understand-testnet-order
@@ -403,6 +411,7 @@ protective stop:
 ```bash
 xsignal-vpe-live testnet-open-protected \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol SOLUSDT \
   --notional 8 \
   --stop-offset-pct 0.05 \
@@ -416,6 +425,7 @@ symbol is flat, and marks the local position closed:
 ```bash
 xsignal-vpe-live testnet-close-protected \
   --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
   --symbol SOLUSDT \
   --position-id SOLUSDT-1 \
   --i-understand-testnet-order
