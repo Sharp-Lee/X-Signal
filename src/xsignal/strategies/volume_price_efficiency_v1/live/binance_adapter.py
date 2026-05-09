@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from xsignal.strategies.volume_price_efficiency_v1.live.models import (
     AccountSnapshot,
     SymbolMetadata,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import format_decimal
 
 
 BINANCE_USD_FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
@@ -30,6 +30,7 @@ def parse_symbol_metadata(
         raise ValueError("symbol does not support STOP_MARKET")
     price_filter = _filter_by_type(symbol_payload, "PRICE_FILTER")
     lot_size = _filter_by_type(symbol_payload, "LOT_SIZE")
+    market_lot_size = _filter_by_type(symbol_payload, "MARKET_LOT_SIZE")
     min_notional = _filter_by_type(symbol_payload, "MIN_NOTIONAL")
     return SymbolMetadata(
         symbol=str(symbol_payload["symbol"]),
@@ -40,6 +41,11 @@ def parse_symbol_metadata(
         supports_stop_market=True,
         trigger_protect=float(symbol_payload.get("triggerProtect", 0.0)),
         updated_at=updated_at,
+        min_quantity=float(lot_size["minQty"]),
+        max_quantity=float(lot_size["maxQty"]),
+        market_min_quantity=float(market_lot_size["minQty"]),
+        market_max_quantity=float(market_lot_size["maxQty"]),
+        market_quantity_step=float(market_lot_size["stepSize"]),
     )
 
 
@@ -222,6 +228,5 @@ class BinanceUsdFuturesTestnetBroker:
         )
 
 
-def _format_decimal(value: float) -> str:
-    decimal_value = Decimal(str(value)).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-    return format(decimal_value.normalize(), "f")
+def _format_decimal(value) -> str:
+    return format_decimal(value)

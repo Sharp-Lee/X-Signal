@@ -15,6 +15,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import (
     BinanceRestClient,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.ids import build_client_order_id
+from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
@@ -175,6 +176,7 @@ def run_testnet_lifecycle_command(
         quantity=quantity,
         stop_offset_pct=stop_offset_pct,
         price_tick=metadata.price_tick,
+        symbol_rules=SymbolRules.from_metadata(metadata),
     )
     print(json.dumps(vars(result), indent=2, sort_keys=True))
     return 0

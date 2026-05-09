@@ -36,6 +36,11 @@ class SymbolMetadata:
     supports_stop_market: bool
     trigger_protect: float
     updated_at: datetime
+    min_quantity: float = 0.0
+    max_quantity: float | None = None
+    market_min_quantity: float = 0.0
+    market_max_quantity: float | None = None
+    market_quantity_step: float = 0.0
 
 
 @dataclass(frozen=True)

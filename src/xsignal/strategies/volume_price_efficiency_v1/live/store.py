@@ -62,7 +62,12 @@ class LiveStore:
               price_tick real not null,
               supports_stop_market integer not null,
               trigger_protect real not null,
-              updated_at text not null
+              updated_at text not null,
+              min_quantity real not null default 0,
+              max_quantity real,
+              market_min_quantity real not null default 0,
+              market_max_quantity real,
+              market_quantity_step real not null default 0
             );
             create table if not exists account_snapshots (
               id integer primary key autoincrement,
@@ -78,7 +83,25 @@ class LiveStore:
             );
             """
         )
+        self._ensure_symbol_metadata_columns()
         self.connection.commit()
+
+    def _ensure_symbol_metadata_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute("pragma table_info(symbol_metadata)").fetchall()
+        }
+        for name, definition in {
+            "min_quantity": "real not null default 0",
+            "max_quantity": "real",
+            "market_min_quantity": "real not null default 0",
+            "market_max_quantity": "real",
+            "market_quantity_step": "real not null default 0",
+        }.items():
+            if name not in columns:
+                self.connection.execute(
+                    f"alter table symbol_metadata add column {name} {definition}"
+                )
 
     def create_position(self, *, symbol: str, state: PositionState) -> str:
         row = self.connection.execute("select count(*) from positions").fetchone()
@@ -138,7 +161,12 @@ class LiveStore:
     def upsert_symbol_metadata(self, metadata: SymbolMetadata) -> None:
         self.connection.execute(
             """
-            insert into symbol_metadata values (?, ?, ?, ?, ?, ?, ?, ?)
+            insert into symbol_metadata(
+              symbol, status, min_notional, quantity_step, price_tick,
+              supports_stop_market, trigger_protect, updated_at,
+              min_quantity, max_quantity, market_min_quantity, market_max_quantity,
+              market_quantity_step
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(symbol) do update set
               status = excluded.status,
               min_notional = excluded.min_notional,
@@ -146,7 +174,12 @@ class LiveStore:
               price_tick = excluded.price_tick,
               supports_stop_market = excluded.supports_stop_market,
               trigger_protect = excluded.trigger_protect,
-              updated_at = excluded.updated_at
+              updated_at = excluded.updated_at,
+              min_quantity = excluded.min_quantity,
+              max_quantity = excluded.max_quantity,
+              market_min_quantity = excluded.market_min_quantity,
+              market_max_quantity = excluded.market_max_quantity,
+              market_quantity_step = excluded.market_quantity_step
             """,
             (
                 metadata.symbol,
@@ -157,6 +190,11 @@ class LiveStore:
                 int(metadata.supports_stop_market),
                 metadata.trigger_protect,
                 _dt(metadata.updated_at),
+                metadata.min_quantity,
+                metadata.max_quantity,
+                metadata.market_min_quantity,
+                metadata.market_max_quantity,
+                metadata.market_quantity_step,
             ),
         )
         self.connection.commit()
@@ -177,6 +215,11 @@ class LiveStore:
             supports_stop_market=bool(row["supports_stop_market"]),
             trigger_protect=row["trigger_protect"],
             updated_at=_parse_dt(row["updated_at"]),
+            min_quantity=row["min_quantity"],
+            max_quantity=row["max_quantity"],
+            market_min_quantity=row["market_min_quantity"],
+            market_max_quantity=row["market_max_quantity"],
+            market_quantity_step=row["market_quantity_step"],
         )
 
     def record_account_snapshot(self, snapshot: AccountSnapshot) -> None:

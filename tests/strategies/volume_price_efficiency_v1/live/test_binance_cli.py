@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 from xsignal.strategies.volume_price_efficiency_v1.live import cli
@@ -212,5 +213,6 @@ def test_testnet_lifecycle_runs_runner_and_prints_result(capsys):
     captured = capsys.readouterr()
     assert result == 0
     assert calls[0]["price_tick"] == 0.1
+    assert calls[0]["symbol_rules"].market_quantity_step == Decimal("0.00100000")
     assert '"final_position_amount": 0.0' in captured.out
     assert "secret" not in captured.out.lower()

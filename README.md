@@ -325,3 +325,18 @@ The command opens a tiny testnet long, places a `STOP_MARKET closePosition=true`
 protection order, verifies the position and stop, cancels the stop, closes with
 a reduce-only market sell, and verifies the symbol is flat again. Production
 trading remains disabled.
+
+Before submitting lifecycle orders, the command loads Binance `exchangeInfo`
+for the symbol and builds local order rules:
+
+- market quantities are floored to `MARKET_LOT_SIZE.stepSize`
+- quantities must satisfy `MARKET_LOT_SIZE.minQty/maxQty`
+- stop prices are floored to `PRICE_FILTER.tickSize`
+- notional sizing helpers reject orders below `MIN_NOTIONAL`
+- client order ids use ASCII-only compact digests, so Chinese-name symbols do
+  not leak into Binance `newClientOrderId` / `clientAlgoId`
+
+The first live preset still forces isolated margin and `1x` leverage. Different
+symbol maximum-leverage brackets therefore do not affect order acceptance yet;
+if leverage is raised later, `/fapi/v1/leverageBracket` must become part of the
+preflight gate.

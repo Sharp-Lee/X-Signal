@@ -44,6 +44,11 @@ def test_store_persists_metadata_and_account_snapshot(tmp_path):
         supports_stop_market=True,
         trigger_protect=0.05,
         updated_at=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        min_quantity=0.001,
+        max_quantity=1000.0,
+        market_min_quantity=0.001,
+        market_max_quantity=100.0,
+        market_quantity_step=0.001,
     )
     snapshot = AccountSnapshot(
         mode="testnet",
