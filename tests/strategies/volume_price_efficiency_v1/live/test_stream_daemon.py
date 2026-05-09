@@ -6,6 +6,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
+    _should_parse_stream_payload,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
     seed_rolling_buffers,
@@ -105,6 +106,38 @@ class ClosedEntryGate:
     allow_entries = False
 
 
+class ActiveSymbolService:
+    def __init__(self, symbols: set[str]) -> None:
+        self.symbols = symbols
+
+    def has_active_symbol_position(self, symbol: str) -> bool:
+        return symbol in self.symbols
+
+
+def _stream_payload(*, symbol: str = "BTCUSDT", closed: bool = False):
+    return {
+        "stream": f"{symbol.lower()}@kline_1m",
+        "data": {
+            "e": "kline",
+            "E": 1778318492123,
+            "s": symbol,
+            "k": {
+                "t": 1778313600000,
+                "T": 1778313659999,
+                "s": symbol,
+                "i": "1m",
+                "o": "100.0",
+                "c": "105.5",
+                "h": "108.0",
+                "l": "99.0",
+                "v": "12.3",
+                "q": "1298.0",
+                "x": closed,
+            },
+        },
+    }
+
+
 def test_ws_base_url_for_mode_uses_testnet_and_live_hosts():
     assert ws_base_url_for_mode("testnet") == "wss://stream.binancefuture.com/stream"
     assert ws_base_url_for_mode("live") == "wss://fstream.binance.com/market/stream"
@@ -183,6 +216,23 @@ def test_recover_symbols_1m_gap_uses_slower_recovery_sleep(monkeypatch):
     )
 
     assert sleeps == [0.1, 0.1]
+
+
+def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
+    service = ActiveSymbolService({"BTCUSDT"})
+
+    assert not _should_parse_stream_payload(
+        _stream_payload(symbol="ETHUSDT", closed=False),
+        service,
+    )
+    assert _should_parse_stream_payload(
+        _stream_payload(symbol="BTCUSDT", closed=False),
+        service,
+    )
+    assert _should_parse_stream_payload(
+        _stream_payload(symbol="ETHUSDT", closed=True),
+        service,
+    )
 
 
 def test_process_closed_1m_event_respects_entry_gate_for_aggregates():

@@ -291,6 +291,11 @@ async def _consume_stream_url(
                     if stop_event.is_set():
                         return
                     payload = json.loads(message)
+                    if not _should_parse_stream_payload(payload, service):
+                        if counter.incremented_past_limit():
+                            stop_event.set()
+                            return
+                        continue
                     event = parse_kline_stream_event(payload)
                     if event.is_closed:
                         _process_closed_1m_event(
@@ -310,6 +315,21 @@ async def _consume_stream_url(
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(config.reconnect_backoff_seconds)
+
+
+def _should_parse_stream_payload(payload: dict, service: RealtimeStrategyService) -> bool:
+    data = payload.get("data", payload)
+    if data.get("e") != "kline":
+        return True
+    kline = data.get("k")
+    if not isinstance(kline, dict):
+        return True
+    if bool(kline.get("x")):
+        return True
+    symbol = str(kline.get("s") or data.get("s") or "")
+    if not symbol:
+        return True
+    return service.has_active_symbol_position(symbol)
 
 
 def _recover_symbols_1m_gap(
