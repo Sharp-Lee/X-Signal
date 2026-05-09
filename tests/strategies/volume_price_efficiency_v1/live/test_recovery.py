@@ -72,7 +72,7 @@ def test_recovery_start_uses_cursor_plus_one_minute_when_available(tmp_path):
     ) == cursor + timedelta(minutes=1)
 
 
-def test_recovery_start_without_cursor_uses_earliest_active_bucket_start(tmp_path):
+def test_recovery_start_without_cursor_starts_after_latest_closed_1m(tmp_path):
     store = LiveStore.open(tmp_path / "live.sqlite")
     store.initialize()
 
@@ -81,7 +81,7 @@ def test_recovery_start_without_cursor_uses_earliest_active_bucket_start(tmp_pat
         symbol="BTCUSDT",
         target_intervals=("4h", "1d"),
         server_time_ms=1778347800000,
-    ) == datetime(2026, 5, 9, tzinfo=timezone.utc)
+    ) == datetime(2026, 5, 9, 17, 30, tzinfo=timezone.utc)
 
 
 def test_replay_persists_1m_bars_advances_cursor_and_blocks_historical_entries(tmp_path):

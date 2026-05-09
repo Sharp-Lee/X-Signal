@@ -423,10 +423,13 @@ Any Binance USD-M kline interval is accepted, including `1m`, `3m`, `5m`,
 
 On startup and before every WebSocket reconnect, the daemon reads the persisted
 `1m` cursor for each symbol, fetches any missing closed `1m` bars through REST,
-stores them locally, and replays them through the local aggregator. Recovered
-historical bars update buffers and protective position state, but they do not
-open delayed entries or submit delayed pyramid adds; the daemon waits for fresh
-realtime triggers after recovery.
+stores them locally, and replays them through the local aggregator. On the very
+first run for a symbol, no historical `1m` gap is fetched; the REST-seeded
+closed `1h`/`4h`/`1d` buffers provide initial signal context, and local `1m`
+retention begins from that startup point. Recovered historical bars update
+buffers and protective position state, but they do not open delayed entries or
+submit delayed pyramid adds; the daemon waits for fresh realtime triggers after
+recovery.
 
 The one-shot cycle remains available as a fallback/manual check:
 

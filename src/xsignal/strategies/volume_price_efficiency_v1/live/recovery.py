@@ -4,10 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from xsignal.strategies.volume_price_efficiency_v1.live.bar_aggregator import (
-    MultiIntervalAggregator,
-    bucket_open_time,
-)
+from xsignal.strategies.volume_price_efficiency_v1.live.bar_aggregator import MultiIntervalAggregator
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import KlineStreamEvent
 
@@ -50,9 +47,7 @@ def recovery_start_time(
     if cursor is not None:
         return cursor + timedelta(minutes=1)
     latest = latest_closed_1m_open_time(server_time_ms)
-    if not target_intervals:
-        return latest
-    return min(bucket_open_time(latest, interval) for interval in target_intervals)
+    return latest + timedelta(minutes=1)
 
 
 def latest_closed_1m_open_time(server_time_ms: int) -> datetime:
