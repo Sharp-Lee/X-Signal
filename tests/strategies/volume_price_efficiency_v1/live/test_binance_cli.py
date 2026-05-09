@@ -185,6 +185,36 @@ def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
     assert smoke_args.command == "live-smoke"
 
 
+def test_cli_has_stream_daemon_command(tmp_path):
+    parser = cli.build_parser()
+    subcommands = parser._subparsers._group_actions[0].choices
+    args = parser.parse_args(
+        [
+            "stream-daemon",
+            "--mode",
+            "testnet",
+            "--db",
+            str(tmp_path / "stream.sqlite"),
+            "--interval",
+            "1h",
+            "--interval",
+            "4h",
+            "--max-symbols",
+            "10",
+            "--stop-after-events",
+            "3",
+        ]
+    )
+
+    assert "stream-daemon" in subcommands
+    assert args.command == "stream-daemon"
+    assert args.mode == "testnet"
+    assert args.db == tmp_path / "stream.sqlite"
+    assert args.interval == ["1h", "4h"]
+    assert args.max_symbols == 10
+    assert args.stop_after_events == 3
+
+
 def test_testnet_lifecycle_requires_explicit_acknowledgement(capsys):
     result = cli.run_testnet_lifecycle_command(
         symbol="BTCUSDT",
@@ -381,6 +411,51 @@ def test_run_cycle_refuses_live_without_ack_and_enable_file(tmp_path, capsys):
     captured = capsys.readouterr()
     assert result == 2
     assert "live trading requires" in captured.err
+
+
+def test_stream_daemon_refuses_live_without_ack_and_enable_file(tmp_path, capsys):
+    result = cli.run_stream_daemon_command(
+        mode="live",
+        db=tmp_path / "stream.sqlite",
+        intervals=["1h"],
+        max_symbols=1,
+        lookback_bars=120,
+        env_file=None,
+        acknowledge_live=False,
+        live_enabled=False,
+        daemon_runner=lambda **kwargs: 0,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "live trading requires" in captured.err
+
+
+def test_stream_daemon_uses_injected_runner(tmp_path):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    result = cli.run_stream_daemon_command(
+        mode="testnet",
+        db=tmp_path / "stream.sqlite",
+        intervals=["1h", "4h"],
+        max_symbols=2,
+        lookback_bars=120,
+        env_file=None,
+        acknowledge_live=False,
+        live_enabled=False,
+        credentials=object(),
+        daemon_runner=fake_runner,
+    )
+
+    assert result == 0
+    assert calls[0]["config"].mode == "testnet"
+    assert calls[0]["config"].db_path == tmp_path / "stream.sqlite"
+    assert calls[0]["config"].intervals == ("1h", "4h")
+    assert calls[0]["credentials"] is not None
 
 
 def test_run_cycle_uses_injected_dependencies_and_prints_result(tmp_path, capsys):

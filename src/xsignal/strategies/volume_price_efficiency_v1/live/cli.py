@@ -22,6 +22,11 @@ from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import 
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
 from xsignal.strategies.volume_price_efficiency_v1.live.runner import run_live_cycle
 from xsignal.strategies.volume_price_efficiency_v1.live.config import LiveTradingConfig
+from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
+    DEFAULT_REALTIME_INTERVALS,
+    StreamDaemonConfig,
+    run_stream_daemon,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
@@ -73,6 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
     run_cycle.add_argument("--lookback-bars", type=int, default=120)
     run_cycle.add_argument("--env-file", type=Path)
     run_cycle.add_argument("--i-understand-live-order", action="store_true")
+
+    stream_daemon = subparsers.add_parser("stream-daemon")
+    stream_daemon.add_argument("--mode", choices=["testnet", "live"], required=True)
+    stream_daemon.add_argument("--db", type=Path, required=True)
+    stream_daemon.add_argument("--interval", action="append", default=[])
+    stream_daemon.add_argument("--max-symbols", type=int)
+    stream_daemon.add_argument("--lookback-bars", type=int, default=120)
+    stream_daemon.add_argument("--seed-sleep-ms", type=int, default=20)
+    stream_daemon.add_argument("--reconcile-interval-seconds", type=float, default=300.0)
+    stream_daemon.add_argument("--env-file", type=Path)
+    stream_daemon.add_argument("--stop-after-events", type=int)
+    stream_daemon.add_argument("--i-understand-live-order", action="store_true")
 
     live_smoke = subparsers.add_parser("live-smoke")
     live_smoke.add_argument("--symbol", default="BTCUSDT")
@@ -380,6 +397,50 @@ def run_live_smoke_command(*, symbol: str, env_file: Path | None = LOCAL_LIVE_EN
     return 0
 
 
+def run_stream_daemon_command(
+    *,
+    mode: str,
+    db: Path,
+    intervals: list[str],
+    max_symbols: int | None,
+    lookback_bars: int,
+    env_file: Path | None,
+    acknowledge_live: bool,
+    live_enabled: bool | None = None,
+    seed_sleep_ms: int = 20,
+    reconcile_interval_seconds: float = 300.0,
+    stop_after_events: int | None = None,
+    credentials=None,
+    daemon_runner=run_stream_daemon,
+) -> int:
+    live_enabled = _live_enabled() if live_enabled is None else live_enabled
+    if mode == "live" and (not acknowledge_live or not live_enabled):
+        print(
+            "live trading requires --i-understand-live-order and XSIGNAL_ENABLE_LIVE_TRADING=1 "
+            "or /etc/xsignal/enable-live-trading",
+            file=sys.stderr,
+        )
+        return 2
+    credentials = credentials or _credentials_from_env(env_file=_default_env_file(mode, env_file))
+    if credentials is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for stream-daemon",
+            file=sys.stderr,
+        )
+        return 2
+    config = StreamDaemonConfig(
+        mode=mode,
+        db_path=db,
+        intervals=tuple(intervals or DEFAULT_REALTIME_INTERVALS),
+        lookback_bars=lookback_bars,
+        max_symbols=max_symbols,
+        seed_sleep_ms=seed_sleep_ms,
+        reconcile_interval_seconds=reconcile_interval_seconds,
+        stop_after_events=stop_after_events,
+    )
+    return daemon_runner(config=config, credentials=credentials)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -413,6 +474,19 @@ def main(argv: list[str] | None = None) -> int:
             lookback_bars=args.lookback_bars,
             env_file=args.env_file,
             acknowledge_live=args.i_understand_live_order,
+        )
+    if args.command == "stream-daemon":
+        return run_stream_daemon_command(
+            mode=args.mode,
+            db=args.db,
+            intervals=args.interval,
+            max_symbols=args.max_symbols,
+            lookback_bars=args.lookback_bars,
+            env_file=args.env_file,
+            acknowledge_live=args.i_understand_live_order,
+            seed_sleep_ms=args.seed_sleep_ms,
+            reconcile_interval_seconds=args.reconcile_interval_seconds,
+            stop_after_events=args.stop_after_events,
         )
     if args.command == "live-smoke":
         return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)
