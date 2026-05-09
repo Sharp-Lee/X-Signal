@@ -395,6 +395,35 @@ are marked `ERROR_LOCKED` for manual inspection. Production trading remains
 disabled until the same reconciliation guarantees are wired into the long-running
 service loop.
 
+For repeatable testnet rehearsals, use the protected-position commands instead
+of ad hoc scripts. Opening a protected rehearsal position persists the local
+position and deterministic order intents before submitting the entry and
+protective stop:
+
+```bash
+xsignal-vpe-live testnet-open-protected \
+  --db data/live/vpe-testnet.sqlite \
+  --symbol SOLUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+Closing a protected rehearsal position cancels the strategy stop, persists a
+reduce-only close intent, submits the reduce-only market close, verifies the
+symbol is flat, and marks the local position closed:
+
+```bash
+xsignal-vpe-live testnet-close-protected \
+  --db data/live/vpe-testnet.sqlite \
+  --symbol SOLUSDT \
+  --position-id SOLUSDT-1 \
+  --i-understand-testnet-order
+```
+
+Both commands are testnet-only and require the explicit acknowledgement flag
+because they change Binance testnet account state.
+
 ## VPE Automatic Live Cycle
 
 The preferred automatic runner is the realtime WebSocket daemon. In steady

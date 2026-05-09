@@ -203,6 +203,55 @@ Do not close a local strategy position only on the exchange UI. If a position
 must be closed manually, keep the exchange action and local SQLite reconciliation
 as one audited procedure so the daemon does not restart with stale local state.
 
+## 受控测试网开平仓演练
+
+Use the dedicated testnet commands instead of ad hoc Python snippets. Both
+commands require `--i-understand-testnet-order` because they submit real Binance
+testnet orders.
+
+Before opening a rehearsal position, confirm the daemon is healthy and note the
+current active position count:
+
+```bash
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-status --db /var/lib/xsignal/live/vpe-testnet.sqlite'
+```
+
+Open a small protected rehearsal position:
+
+```bash
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-open-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT --notional 8 --stop-offset-pct 0.05 --i-understand-testnet-order'
+```
+
+The command persists the local position and deterministic entry/stop client ids
+before submitting orders. It sets isolated margin and `1x` leverage, calculates
+a market quantity from the requested notional using Binance symbol rules, opens
+a long, and immediately places a close-position stop.
+
+After opening, run read-only reconciliation for the same symbol and confirm the
+status remains clean:
+
+```bash
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-reconcile --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT'
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-status --db /var/lib/xsignal/live/vpe-testnet.sqlite'
+```
+
+Close the rehearsal position through the audited close path:
+
+```bash
+ssh alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-close-protected --db /var/lib/xsignal/live/vpe-testnet.sqlite --symbol SOLUSDT --position-id SOLUSDT-1 --i-understand-testnet-order'
+```
+
+The close command cancels the strategy stop, records a `MANUAL_RECONCILE`
+reduce-only close intent, submits the reduce-only market close, verifies the
+symbol is flat, and marks the local position `CLOSED`.
+
+After closing, run status and read-only reconciliation again. Expected state:
+
+- no unresolved order intents
+- no error-locked positions
+- the closed symbol is absent from active local positions
+- the daemon remains `OVERALL OK`
+
 ## Deployment To Alpha
 
 From the active worktree:

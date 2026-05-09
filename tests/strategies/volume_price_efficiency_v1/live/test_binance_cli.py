@@ -156,6 +156,47 @@ def test_cli_has_guarded_testnet_reconcile_command(tmp_path):
     assert not args.i_understand_testnet_order
 
 
+def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
+    parser = cli.build_parser()
+    subcommands = parser._subparsers._group_actions[0].choices
+    open_args = parser.parse_args(
+        [
+            "testnet-open-protected",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "SOLUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+        ]
+    )
+    close_args = parser.parse_args(
+        [
+            "testnet-close-protected",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "SOLUSDT",
+            "--position-id",
+            "SOLUSDT-1",
+        ]
+    )
+
+    assert "testnet-open-protected" in subcommands
+    assert "testnet-close-protected" in subcommands
+    assert open_args.command == "testnet-open-protected"
+    assert open_args.db == tmp_path / "live.sqlite"
+    assert open_args.symbol == "SOLUSDT"
+    assert open_args.notional == 8.0
+    assert open_args.stop_offset_pct == 0.05
+    assert not open_args.i_understand_testnet_order
+    assert close_args.command == "testnet-close-protected"
+    assert close_args.position_id == "SOLUSDT-1"
+    assert not close_args.i_understand_testnet_order
+
+
 def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
     parser = cli.build_parser()
     subcommands = parser._subparsers._group_actions[0].choices
@@ -413,6 +454,102 @@ def test_testnet_reconcile_runs_runner_and_prints_summary(tmp_path, capsys):
     assert calls[0]["environment"] == "testnet"
     assert not calls[0]["allow_repair"]
     assert '"status": "CLEAN"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_open_protected_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_close_protected_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_close_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        position_id=None,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
+def test_testnet_open_protected_runs_runner_and_prints_result(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="SOLUSDT",
+            position_id="SOLUSDT-1",
+            quantity=0.08,
+            requested_notional=8.0,
+            effective_notional=8.0,
+            entry_price=100.0,
+            stop_offset_pct=0.05,
+            stop_price=95.0,
+            entry_client_order_id="XV1TE...",
+            stop_client_order_id="XV1TS...",
+        )
+
+    result = cli.run_testnet_open_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["symbol"] == "SOLUSDT"
+    assert calls[0]["store"] is not None
+    assert '"position_id": "SOLUSDT-1"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_close_protected_runs_runner_and_prints_result(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            symbol="SOLUSDT",
+            position_id="SOLUSDT-1",
+            quantity=0.08,
+            canceled_stop_client_order_id="XV1TS...",
+            close_client_order_id="XV1TM...",
+            final_position_amount=0.0,
+        )
+
+    result = cli.run_testnet_close_protected_command(
+        db=tmp_path / "live.sqlite",
+        symbol="SOLUSDT",
+        position_id="SOLUSDT-1",
+        acknowledge=True,
+        broker=object(),
+        rehearsal_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["position_id"] == "SOLUSDT-1"
+    assert calls[0]["store"] is not None
+    assert '"final_position_amount": 0.0' in captured.out
     assert "secret" not in captured.out.lower()
 
 

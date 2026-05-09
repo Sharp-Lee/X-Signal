@@ -36,6 +36,10 @@ from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
+    close_rehearsal_position,
+    open_protected_rehearsal_position,
+)
 
 
 LOCAL_TESTNET_ENV_FILE = Path(".secrets/binance-testnet.env")
@@ -76,6 +80,19 @@ def build_parser() -> argparse.ArgumentParser:
     testnet_reconcile.add_argument("--symbol", action="append", required=True)
     testnet_reconcile.add_argument("--repair", action="store_true")
     testnet_reconcile.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_open = subparsers.add_parser("testnet-open-protected")
+    testnet_open.add_argument("--db", type=Path, required=True)
+    testnet_open.add_argument("--symbol", required=True)
+    testnet_open.add_argument("--notional", type=float, required=True)
+    testnet_open.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_open.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_close = subparsers.add_parser("testnet-close-protected")
+    testnet_close.add_argument("--db", type=Path, required=True)
+    testnet_close.add_argument("--symbol", required=True)
+    testnet_close.add_argument("--position-id")
+    testnet_close.add_argument("--i-understand-testnet-order", action="store_true")
 
     run_cycle = subparsers.add_parser("run-cycle")
     run_cycle.add_argument("--mode", choices=["testnet", "live"], required=True)
@@ -295,6 +312,82 @@ def run_testnet_reconcile_command(
     )
     print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
     return 1 if summary.error_count else 0
+
+
+def run_testnet_open_protected_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=open_protected_rehearsal_position,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-open-protected requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-open-protected",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+    )
+    print(json.dumps(vars(result), indent=2, sort_keys=True))
+    return 0
+
+
+def run_testnet_close_protected_command(
+    *,
+    db: Path,
+    symbol: str,
+    position_id: str | None,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    rehearsal_runner=close_rehearsal_position,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-close-protected requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (None if broker is not None else _build_testnet_rest_client())
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-close-protected",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        position_id=position_id,
+    )
+    print(json.dumps(vars(result), indent=2, sort_keys=True))
+    return 0
 
 
 def run_status_command(
@@ -520,6 +613,21 @@ def main(argv: list[str] | None = None) -> int:
             db=args.db,
             symbols=args.symbol,
             repair=args.repair,
+            acknowledge=args.i_understand_testnet_order,
+        )
+    if args.command == "testnet-open-protected":
+        return run_testnet_open_protected_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            acknowledge=args.i_understand_testnet_order,
+        )
+    if args.command == "testnet-close-protected":
+        return run_testnet_close_protected_command(
+            db=args.db,
+            symbol=args.symbol,
+            position_id=args.position_id,
             acknowledge=args.i_understand_testnet_order,
         )
     if args.command == "status":
