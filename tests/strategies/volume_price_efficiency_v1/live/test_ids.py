@@ -1,3 +1,5 @@
+import re
+
 from xsignal.strategies.volume_price_efficiency_v1.live.ids import build_client_order_id
 
 
@@ -37,3 +39,16 @@ def test_client_order_id_changes_for_different_sequence():
         sequence=2,
     )
     assert first != second
+
+
+def test_client_order_id_uses_only_binance_allowed_ascii_characters_for_chinese_symbols():
+    client_order_id = build_client_order_id(
+        env="testnet",
+        intent="ENTRY",
+        symbol="币安人生USDT",
+        position_id="abc",
+        sequence=1,
+    )
+
+    assert re.fullmatch(r"[\.\w\:/-]{1,36}", client_order_id, flags=re.ASCII)
+    assert "币" not in client_order_id

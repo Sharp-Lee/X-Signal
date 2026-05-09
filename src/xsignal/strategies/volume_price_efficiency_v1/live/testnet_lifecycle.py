@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import time
 import uuid
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
 from xsignal.strategies.volume_price_efficiency_v1.live.ids import build_client_order_id
+from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import (
+    SymbolRules,
+    floor_to_step,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ def run_testnet_lifecycle(
     stop_offset_pct: float,
     position_id: str | None = None,
     price_tick: float | None = None,
+    symbol_rules: SymbolRules | None = None,
     poll_attempts: int = 5,
     poll_sleep_seconds: float = 0.25,
 ) -> TestnetLifecycleResult:
@@ -40,6 +46,9 @@ def run_testnet_lifecycle(
         raise ValueError("price_tick must be positive")
     if poll_attempts <= 0:
         raise ValueError("poll_attempts must be positive")
+    normalized_quantity = (
+        symbol_rules.normalize_market_quantity(quantity) if symbol_rules is not None else quantity
+    )
 
     position_id = position_id or uuid.uuid4().hex[:16]
     entry_client_order_id = build_client_order_id(
@@ -72,7 +81,7 @@ def run_testnet_lifecycle(
         broker.change_leverage(symbol, 1)
         broker.market_buy(
             symbol=symbol,
-            quantity=quantity,
+            quantity=normalized_quantity,
             client_order_id=entry_client_order_id,
         )
 
@@ -85,14 +94,19 @@ def run_testnet_lifecycle(
         opened_position_amount = _position_amount(opened_position)
         reference_price = _position_reference_price(opened_position)
         stop_price = reference_price * (1 - stop_offset_pct)
-        if price_tick is not None:
+        stop_price_for_order = stop_price
+        if symbol_rules is not None:
+            stop_price_for_order = symbol_rules.normalize_price(Decimal(str(stop_price)))
+            stop_price = float(stop_price_for_order)
+        elif price_tick is not None:
             stop_price = _round_down_to_tick(stop_price, price_tick)
+            stop_price_for_order = stop_price
         if stop_price <= 0:
             raise RuntimeError("computed stop price is not positive")
 
         broker.place_stop_market_close(
             symbol=symbol,
-            stop_price=stop_price,
+            stop_price=stop_price_for_order,
             client_order_id=stop_client_order_id,
         )
         stop_placed = True
@@ -131,7 +145,7 @@ def run_testnet_lifecycle(
 
         return TestnetLifecycleResult(
             symbol=symbol,
-            quantity=quantity,
+            quantity=float(normalized_quantity),
             stop_offset_pct=stop_offset_pct,
             stop_price=stop_price,
             entry_client_order_id=entry_client_order_id,
@@ -269,5 +283,4 @@ def _is_open_order(order: dict) -> bool:
 
 
 def _round_down_to_tick(price: float, price_tick: float) -> float:
-    ticks = int(price / price_tick)
-    return ticks * price_tick
+    return float(floor_to_step(Decimal(str(price)), Decimal(str(price_tick))))

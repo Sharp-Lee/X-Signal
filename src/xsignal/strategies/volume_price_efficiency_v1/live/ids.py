@@ -37,7 +37,9 @@ def build_client_order_id(
     if intent_code is None:
         raise ValueError(f"unsupported intent: {intent}")
     digest = hashlib.sha1(f"{symbol}|{position_id}|{sequence}".encode()).hexdigest()[:14]
-    symbol_code = "".join(ch for ch in symbol.upper() if ch.isalnum())[:10]
+    symbol_code = "".join(
+        ch for ch in symbol.upper() if ch.isascii() and ch.isalnum()
+    )[:10]
     client_id = f"XV1{_env_code(env)}{intent_code}{symbol_code}{digest}{sequence:02d}"
     if len(client_id) > 36:
         client_id = f"XV1{_env_code(env)}{intent_code}{digest}{sequence:02d}"

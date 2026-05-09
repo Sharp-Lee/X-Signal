@@ -18,7 +18,13 @@ def _symbol_payload(**overrides):
         "triggerProtect": "0.0500",
         "filters": [
             {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
-            {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+            {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+            {
+                "filterType": "MARKET_LOT_SIZE",
+                "minQty": "0.001",
+                "maxQty": "100",
+                "stepSize": "0.001",
+            },
             {"filterType": "MIN_NOTIONAL", "notional": "5"},
         ],
     }
@@ -40,6 +46,11 @@ def test_parse_symbol_metadata_from_exchange_info_symbol():
         supports_stop_market=True,
         trigger_protect=0.05,
         updated_at=updated_at,
+        min_quantity=0.001,
+        max_quantity=1000.0,
+        market_min_quantity=0.001,
+        market_max_quantity=100.0,
+        market_quantity_step=0.001,
     )
 
 
@@ -48,6 +59,13 @@ def test_parse_symbol_metadata_from_exchange_info_symbol():
     [
         _symbol_payload(orderTypes=["MARKET"]),
         _symbol_payload(filters=[{"filterType": "LOT_SIZE", "stepSize": "0.001"}]),
+        _symbol_payload(
+            filters=[
+                {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                {"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "1000", "stepSize": "0.001"},
+                {"filterType": "MIN_NOTIONAL", "notional": "5"},
+            ],
+        ),
     ],
 )
 def test_parse_symbol_metadata_rejects_missing_required_trading_rules(payload):

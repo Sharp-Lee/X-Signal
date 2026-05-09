@@ -1,6 +1,8 @@
 import pytest
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
+from xsignal.strategies.volume_price_efficiency_v1.live.models import SymbolMetadata
+from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
 )
@@ -267,6 +269,36 @@ def test_run_testnet_lifecycle_rounds_stop_price_down_to_tick():
     )
 
     assert result.stop_price == pytest.approx(95.0)
+
+
+def test_run_testnet_lifecycle_rejects_quantity_below_symbol_market_lot_size():
+    rules = SymbolRules.from_metadata(
+        SymbolMetadata(
+            symbol="RAVEUSDT",
+            status="TRADING",
+            min_notional=5.0,
+            quantity_step=1.0,
+            price_tick=0.0001,
+            supports_stop_market=True,
+            trigger_protect=0.05,
+            updated_at=None,
+            min_quantity=1.0,
+            max_quantity=1_000_000.0,
+            market_min_quantity=1.0,
+            market_max_quantity=100_000.0,
+            market_quantity_step=1.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="below market min quantity"):
+        run_testnet_lifecycle(
+            broker=FakeLifecycleBroker(),
+            symbol="RAVEUSDT",
+            quantity=0.001,
+            stop_offset_pct=0.05,
+            position_id="test-position",
+            symbol_rules=rules,
+        )
 
 
 def test_run_testnet_lifecycle_treats_already_isolated_margin_as_success():
