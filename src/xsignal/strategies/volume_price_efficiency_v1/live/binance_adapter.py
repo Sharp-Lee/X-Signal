@@ -8,9 +8,11 @@ from xsignal.strategies.volume_price_efficiency_v1.live.models import (
     SymbolMetadata,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import format_decimal
+from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceRestClient
 
 
 BINANCE_USD_FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+BINANCE_USD_FUTURES_LIVE_BASE_URL = "https://fapi.binance.com"
 
 
 def _filter_by_type(symbol_payload: dict[str, Any], filter_type: str) -> dict[str, Any]:
@@ -91,6 +93,26 @@ class BinanceUsdFuturesTestnetBroker:
                 return parse_symbol_metadata(item, updated_at=datetime.now(timezone.utc))
         raise ValueError(f"missing Binance symbol metadata for {symbol}")
 
+    def list_trading_usdt_perpetual_symbols(self) -> list[str]:
+        payload = self.rest_client.request("GET", "/fapi/v1/exchangeInfo")
+        symbols = []
+        for item in payload.get("symbols", []):
+            if (
+                item.get("status") == "TRADING"
+                and item.get("quoteAsset") == "USDT"
+                and item.get("contractType") == "PERPETUAL"
+            ):
+                symbols.append(str(item["symbol"]))
+        return sorted(symbols)
+
+    def get_symbol_price(self, symbol: str) -> float:
+        payload = self.rest_client.request(
+            "GET",
+            "/fapi/v1/ticker/price",
+            params={"symbol": symbol},
+        )
+        return float(payload["price"])
+
     def change_margin_type(self, symbol: str, margin_mode: str) -> dict[str, Any]:
         if margin_mode != "isolated":
             raise ValueError("only isolated margin is supported")
@@ -166,6 +188,30 @@ class BinanceUsdFuturesTestnetBroker:
             params={"symbol": symbol},
         )
 
+    def get_all_position_risk(self) -> list[dict[str, Any]]:
+        return self.rest_client.request("GET", "/fapi/v3/positionRisk", signed=True)
+
+    def get_account_snapshot(
+        self,
+        *,
+        mode: str,
+        daily_realized_pnl: float,
+    ) -> AccountSnapshot:
+        account = self.rest_client.request("GET", "/fapi/v3/account", signed=True)
+        positions = self.get_all_position_risk()
+        open_position_count = sum(
+            1 for position in positions if abs(float(position.get("positionAmt", 0.0))) > 0.0
+        )
+        return parse_account_snapshot(
+            account,
+            mode=mode,
+            account_mode=self.get_position_mode(),
+            asset_mode=self.get_multi_assets_mode(),
+            open_position_count=open_position_count,
+            daily_realized_pnl=daily_realized_pnl,
+            captured_at=datetime.now(timezone.utc),
+        )
+
     def get_order(self, *, symbol: str, client_order_id: str) -> dict[str, Any]:
         return self.rest_client.request(
             "GET",
@@ -238,3 +284,26 @@ class BinanceUsdFuturesTestnetBroker:
 
 def _format_decimal(value) -> str:
     return format_decimal(value)
+
+
+def build_usd_futures_broker(
+    *,
+    mode: str,
+    credentials,
+    transport=None,
+    now_ms=None,
+) -> BinanceUsdFuturesTestnetBroker:
+    if mode == "testnet":
+        base_url = BINANCE_USD_FUTURES_TESTNET_BASE_URL
+    elif mode == "live":
+        base_url = BINANCE_USD_FUTURES_LIVE_BASE_URL
+    else:
+        raise ValueError(f"unsupported Binance USD-M mode: {mode}")
+    return BinanceUsdFuturesTestnetBroker(
+        BinanceRestClient(
+            base_url=base_url,
+            credentials=credentials,
+            transport=transport,
+            now_ms=now_ms,
+        )
+    )

@@ -393,3 +393,62 @@ Repair mode does not close unknown positions when local state is `FLAT`; those
 are marked `ERROR_LOCKED` for manual inspection. Production trading remains
 disabled until the same reconciliation guarantees are wired into the long-running
 service loop.
+
+## VPE Automatic Live Cycle
+
+Run one automatic strategy cycle on Binance USD-M Futures testnet:
+
+```bash
+xsignal-vpe-live run-cycle \
+  --mode testnet \
+  --db data/live/vpe-testnet.sqlite \
+  --lookback-bars 120
+```
+
+The cycle performs startup reconciliation first, loads recent closed daily
+klines, computes the fixed VPE live preset, maintains existing stops/adds, and
+opens new long positions only when the latest closed daily bar has a signal.
+If no signal exists, it exits without submitting orders.
+
+Production mode uses the same code path but is guarded by two controls:
+
+```bash
+export XSIGNAL_ENABLE_LIVE_TRADING=1
+xsignal-vpe-live run-cycle \
+  --mode live \
+  --db data/live/vpe-live.sqlite \
+  --lookback-bars 120 \
+  --i-understand-live-order
+```
+
+On servers, the equivalent guard file is:
+
+```text
+/etc/xsignal/enable-live-trading
+```
+
+Production credentials should be stored separately from testnet credentials:
+
+```text
+/etc/xsignal/binance-live.env
+```
+
+Read-only live account smoke check:
+
+```bash
+xsignal-vpe-live live-smoke --symbol BTCUSDT --env-file /etc/xsignal/binance-live.env
+```
+
+Systemd unit templates live in:
+
+```text
+deploy/systemd/xsignal-vpe-testnet-auto-cycle.service
+deploy/systemd/xsignal-vpe-testnet-auto-cycle.timer
+deploy/systemd/xsignal-vpe-live-auto-cycle.service
+deploy/systemd/xsignal-vpe-live-auto-cycle.timer
+```
+
+The testnet timer is intended to run automatically after the Binance UTC daily
+close. The live service includes `ConditionPathExists=/etc/xsignal/enable-live-trading`,
+so installing the live unit files does not enable live order submission unless
+the operator deliberately creates that file and provides production API keys.

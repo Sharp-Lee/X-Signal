@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 import pytest
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_adapter import (
+    BINANCE_USD_FUTURES_LIVE_BASE_URL,
     BinanceUsdFuturesTestnetBroker,
+    build_usd_futures_broker,
     parse_account_snapshot,
     parse_symbol_metadata,
 )
@@ -101,6 +103,23 @@ def test_parse_account_snapshot_from_account_v3():
     assert snapshot.captured_at == captured_at
 
 
+def test_build_broker_selects_testnet_and_live_base_urls():
+    testnet = build_usd_futures_broker(
+        mode="testnet",
+        credentials=None,
+        transport=object(),
+    )
+    live = build_usd_futures_broker(
+        mode="live",
+        credentials=None,
+        transport=object(),
+    )
+
+    assert testnet.rest_client.base_url == "https://testnet.binancefuture.com"
+    assert live.rest_client.base_url == BINANCE_USD_FUTURES_LIVE_BASE_URL
+    assert live.rest_client.base_url == "https://fapi.binance.com"
+
+
 class FakeRestClient:
     def __init__(self) -> None:
         self.calls = []
@@ -139,6 +158,29 @@ def test_broker_fetches_symbol_metadata_from_exchange_info():
     assert metadata.symbol == "BTCUSDT"
     assert metadata.price_tick == 0.1
     assert metadata.quantity_step == 0.001
+
+
+def test_broker_lists_trading_usdt_perpetual_symbols_and_prices():
+    class ExchangeInfoRestClient(FakeRestClient):
+        def request(self, method, path, *, signed=False, params=None):
+            super().request(method, path, signed=signed, params=params)
+            if path == "/fapi/v1/exchangeInfo":
+                return {
+                    "symbols": [
+                        _symbol_payload(symbol="BTCUSDT", quoteAsset="USDT", contractType="PERPETUAL"),
+                        _symbol_payload(symbol="ETHUSDT", quoteAsset="USDT", contractType="PERPETUAL"),
+                        _symbol_payload(symbol="OLDUSDT", quoteAsset="USDT", contractType="PERPETUAL", status="SETTLING"),
+                        _symbol_payload(symbol="BTCBUSD", quoteAsset="BUSD", contractType="PERPETUAL"),
+                    ]
+                }
+            if path == "/fapi/v1/ticker/price":
+                return {"symbol": params["symbol"], "price": "123.45"}
+            return {}
+
+    broker = BinanceUsdFuturesTestnetBroker(ExchangeInfoRestClient())
+
+    assert broker.list_trading_usdt_perpetual_symbols() == ["BTCUSDT", "ETHUSDT"]
+    assert broker.get_symbol_price("BTCUSDT") == 123.45
 
 
 def test_broker_changes_margin_type_and_leverage():
@@ -315,3 +357,33 @@ def test_broker_market_sell_reduce_only_closes_existing_position():
             },
         )
     ]
+
+
+def test_broker_builds_account_snapshot_from_live_account_and_positions():
+    class AccountRestClient(FakeRestClient):
+        def request(self, method, path, *, signed=False, params=None):
+            super().request(method, path, signed=signed, params=params)
+            if path == "/fapi/v3/account":
+                return {
+                    "totalMarginBalance": "1000",
+                    "availableBalance": "900",
+                    "totalInitialMargin": "50",
+                }
+            if path == "/fapi/v1/positionSide/dual":
+                return {"dualSidePosition": False}
+            if path == "/fapi/v1/multiAssetsMargin":
+                return {"multiAssetsMargin": False}
+            if path == "/fapi/v3/positionRisk":
+                return [
+                    {"symbol": "BTCUSDT", "positionAmt": "0.1"},
+                    {"symbol": "ETHUSDT", "positionAmt": "0"},
+                ]
+            return {}
+
+    broker = BinanceUsdFuturesTestnetBroker(AccountRestClient())
+
+    snapshot = broker.get_account_snapshot(mode="live", daily_realized_pnl=0.0)
+
+    assert snapshot.mode == "live"
+    assert snapshot.open_position_count == 1
+    assert snapshot.equity == 1000.0

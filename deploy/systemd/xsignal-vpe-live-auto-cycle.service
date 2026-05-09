@@ -1,0 +1,12 @@
+[Unit]
+Description=X-Signal VPE live automatic strategy cycle
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/xsignal/enable-live-trading
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/x-signal
+Environment=XSIGNAL_ENABLE_LIVE_TRADING=1
+EnvironmentFile=/etc/xsignal/binance-live.env
+ExecStart=/opt/x-signal/.venv/bin/xsignal-vpe-live run-cycle --mode live --db /var/lib/xsignal/live/vpe-live.sqlite --lookback-bars 120 --i-understand-live-order

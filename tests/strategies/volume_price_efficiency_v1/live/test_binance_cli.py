@@ -156,6 +156,35 @@ def test_cli_has_guarded_testnet_reconcile_command(tmp_path):
     assert not args.i_understand_testnet_order
 
 
+def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
+    parser = cli.build_parser()
+    subcommands = parser._subparsers._group_actions[0].choices
+    args = parser.parse_args(
+        [
+            "run-cycle",
+            "--mode",
+            "live",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "BTCUSDT",
+            "--max-symbols",
+            "3",
+            "--i-understand-live-order",
+        ]
+    )
+    smoke_args = parser.parse_args(["live-smoke", "--symbol", "BTCUSDT"])
+
+    assert "run-cycle" in subcommands
+    assert "live-smoke" in subcommands
+    assert args.command == "run-cycle"
+    assert args.mode == "live"
+    assert args.symbol == ["BTCUSDT"]
+    assert args.max_symbols == 3
+    assert args.i_understand_live_order
+    assert smoke_args.command == "live-smoke"
+
+
 def test_testnet_lifecycle_requires_explicit_acknowledgement(capsys):
     result = cli.run_testnet_lifecycle_command(
         symbol="BTCUSDT",
@@ -334,3 +363,59 @@ def test_testnet_reconcile_runs_runner_and_prints_summary(tmp_path, capsys):
     assert not calls[0]["allow_repair"]
     assert '"status": "CLEAN"' in captured.out
     assert "secret" not in captured.out.lower()
+
+
+def test_run_cycle_refuses_live_without_ack_and_enable_file(tmp_path, capsys):
+    result = cli.run_live_cycle_command(
+        mode="live",
+        db=tmp_path / "live.sqlite",
+        symbols=["BTCUSDT"],
+        max_symbols=1,
+        lookback_bars=120,
+        env_file=None,
+        acknowledge_live=False,
+        live_enabled=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "live trading requires" in captured.err
+
+
+def test_run_cycle_uses_injected_dependencies_and_prints_result(tmp_path, capsys):
+    class Summary:
+        error_count = 0
+
+    class Result:
+        def to_dict(self):
+            return {"entries": 1, "scanned_symbols": 1}
+
+    calls = []
+
+    def fake_cycle_runner(**kwargs):
+        calls.append(kwargs)
+        return Result()
+
+    result = cli.run_live_cycle_command(
+        mode="testnet",
+        db=tmp_path / "live.sqlite",
+        symbols=["BTCUSDT"],
+        max_symbols=1,
+        lookback_bars=120,
+        env_file=None,
+        acknowledge_live=False,
+        live_enabled=False,
+        broker=object(),
+        arrays=object(),
+        account=object(),
+        metadata_by_symbol={"BTCUSDT": object()},
+        prices_by_symbol={"BTCUSDT": 100.0},
+        cycle_runner=fake_cycle_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert calls[0]["environment"] == "testnet"
+    assert calls[0]["now"].tzinfo is not None
+    assert '"entries": 1' in captured.out

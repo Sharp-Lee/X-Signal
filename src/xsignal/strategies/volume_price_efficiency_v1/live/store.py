@@ -100,6 +100,7 @@ class LiveStore:
             """
         )
         self._ensure_position_columns()
+        self._ensure_position_lifecycle_columns()
         self._ensure_order_intent_columns()
         self._ensure_symbol_metadata_columns()
         self.connection.commit()
@@ -110,6 +111,24 @@ class LiveStore:
         }
         if "updated_at" not in columns:
             self.connection.execute("alter table positions add column updated_at text")
+
+    def _ensure_position_lifecycle_columns(self) -> None:
+        columns = {
+            row["name"] for row in self.connection.execute("pragma table_info(positions)").fetchall()
+        }
+        for name, definition in {
+            "entry_price": "real",
+            "quantity": "real not null default 0",
+            "highest_high": "real",
+            "stop_price": "real",
+            "atr_at_entry": "real",
+            "next_add_trigger": "real",
+            "add_count": "integer not null default 0",
+            "active_stop_client_order_id": "text",
+            "last_decision_open_time": "text",
+        }.items():
+            if name not in columns:
+                self.connection.execute(f"alter table positions add column {name} {definition}")
 
     def _ensure_order_intent_columns(self) -> None:
         columns = {

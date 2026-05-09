@@ -1,0 +1,10 @@
+[Unit]
+Description=Run X-Signal VPE live automatic strategy cycle after daily close
+
+[Timer]
+OnCalendar=*-*-* 00:02:00 UTC
+Persistent=true
+Unit=xsignal-vpe-live-auto-cycle.service
+
+[Install]
+WantedBy=timers.target

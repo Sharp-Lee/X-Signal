@@ -1,0 +1,10 @@
+[Unit]
+Description=Run X-Signal VPE testnet automatic strategy cycle after daily close
+
+[Timer]
+OnCalendar=*-*-* 00:02:00 UTC
+Persistent=true
+Unit=xsignal-vpe-testnet-auto-cycle.service
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -9,14 +10,18 @@ import sys
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_adapter import (
     BINANCE_USD_FUTURES_TESTNET_BASE_URL,
     BinanceUsdFuturesTestnetBroker,
+    build_usd_futures_broker,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import (
     BinanceCredentials,
     BinanceRestClient,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.ids import build_client_order_id
+from xsignal.strategies.volume_price_efficiency_v1.live.market_data import load_recent_daily_arrays
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
+from xsignal.strategies.volume_price_efficiency_v1.live.runner import run_live_cycle
+from xsignal.strategies.volume_price_efficiency_v1.live.config import LiveTradingConfig
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import (
     run_testnet_lifecycle,
@@ -24,6 +29,8 @@ from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import
 
 
 LOCAL_TESTNET_ENV_FILE = Path(".secrets/binance-testnet.env")
+LOCAL_LIVE_ENV_FILE = Path(".secrets/binance-live.env")
+SYSTEM_LIVE_ENABLE_FILE = Path("/etc/xsignal/enable-live-trading")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +64,19 @@ def build_parser() -> argparse.ArgumentParser:
     testnet_reconcile.add_argument("--symbol", action="append", required=True)
     testnet_reconcile.add_argument("--repair", action="store_true")
     testnet_reconcile.add_argument("--i-understand-testnet-order", action="store_true")
+
+    run_cycle = subparsers.add_parser("run-cycle")
+    run_cycle.add_argument("--mode", choices=["testnet", "live"], required=True)
+    run_cycle.add_argument("--db", type=Path, required=True)
+    run_cycle.add_argument("--symbol", action="append")
+    run_cycle.add_argument("--max-symbols", type=int)
+    run_cycle.add_argument("--lookback-bars", type=int, default=120)
+    run_cycle.add_argument("--env-file", type=Path)
+    run_cycle.add_argument("--i-understand-live-order", action="store_true")
+
+    live_smoke = subparsers.add_parser("live-smoke")
+    live_smoke.add_argument("--symbol", default="BTCUSDT")
+    live_smoke.add_argument("--env-file", type=Path, default=LOCAL_LIVE_ENV_FILE)
     return parser
 
 
@@ -90,6 +110,16 @@ def _build_testnet_rest_client(env_file: Path | None = LOCAL_TESTNET_ENV_FILE) -
         base_url=BINANCE_USD_FUTURES_TESTNET_BASE_URL,
         credentials=credentials,
     )
+
+
+def _default_env_file(mode: str, env_file: Path | None) -> Path | None:
+    if env_file is not None:
+        return env_file
+    return LOCAL_TESTNET_ENV_FILE if mode == "testnet" else LOCAL_LIVE_ENV_FILE
+
+
+def _live_enabled() -> bool:
+    return os.environ.get("XSIGNAL_ENABLE_LIVE_TRADING") == "1" or SYSTEM_LIVE_ENABLE_FILE.exists()
 
 
 def run_testnet_smoke(
@@ -236,6 +266,120 @@ def run_testnet_reconcile_command(
     return 1 if summary.error_count else 0
 
 
+def run_live_cycle_command(
+    *,
+    mode: str,
+    db: Path,
+    symbols: list[str] | None,
+    max_symbols: int | None,
+    lookback_bars: int,
+    env_file: Path | None,
+    acknowledge_live: bool,
+    live_enabled: bool | None = None,
+    broker=None,
+    arrays=None,
+    account=None,
+    metadata_by_symbol=None,
+    prices_by_symbol=None,
+    cycle_runner=run_live_cycle,
+) -> int:
+    live_enabled = _live_enabled() if live_enabled is None else live_enabled
+    if mode == "live" and (not acknowledge_live or not live_enabled):
+        print(
+            "live trading requires --i-understand-live-order and XSIGNAL_ENABLE_LIVE_TRADING=1 "
+            "or /etc/xsignal/enable-live-trading",
+            file=sys.stderr,
+        )
+        return 2
+
+    credentials = _credentials_from_env(env_file=_default_env_file(mode, env_file))
+    if broker is None:
+        if credentials is None:
+            print(
+                "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for run-cycle",
+                file=sys.stderr,
+            )
+            return 2
+        broker = build_usd_futures_broker(mode=mode, credentials=credentials)
+
+    store = LiveStore.open(db)
+    store.initialize()
+    selected_symbols = list(symbols or [])
+    if not selected_symbols:
+        selected_symbols = broker.list_trading_usdt_perpetual_symbols()
+    if max_symbols is not None:
+        selected_symbols = selected_symbols[:max_symbols]
+    if not selected_symbols:
+        print("run-cycle requires at least one symbol", file=sys.stderr)
+        return 2
+
+    if arrays is None or account is None or metadata_by_symbol is None or prices_by_symbol is None:
+        server_time = broker.rest_client.request("GET", "/fapi/v1/time")["serverTime"]
+        arrays = load_recent_daily_arrays(
+            broker.rest_client,
+            symbols=selected_symbols,
+            limit=lookback_bars,
+            server_time_ms=int(server_time),
+        )
+        account = broker.get_account_snapshot(mode=mode, daily_realized_pnl=0.0)
+        metadata_by_symbol = {
+            symbol: broker.get_symbol_metadata(symbol)
+            for symbol in selected_symbols
+            if symbol in arrays.symbols
+        }
+        prices_by_symbol = {
+            symbol: broker.get_symbol_price(symbol)
+            for symbol in selected_symbols
+            if symbol in arrays.symbols
+        }
+
+    config = LiveTradingConfig(
+        mode=mode,
+        live_acknowledgement=(mode != "live" or (acknowledge_live and live_enabled)),
+    )
+    result = cycle_runner(
+        store=store,
+        broker=broker,
+        config=config,
+        environment=mode,
+        arrays=arrays,
+        account=account,
+        metadata_by_symbol=metadata_by_symbol,
+        prices_by_symbol=prices_by_symbol,
+        now=datetime.now(timezone.utc),
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 1 if getattr(result, "blocked", False) else 0
+
+
+def run_live_smoke_command(*, symbol: str, env_file: Path | None = LOCAL_LIVE_ENV_FILE) -> int:
+    credentials = _credentials_from_env(env_file=env_file)
+    if credentials is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for live-smoke",
+            file=sys.stderr,
+        )
+        return 2
+    broker = build_usd_futures_broker(mode="live", credentials=credentials)
+    server_time = broker.rest_client.request("GET", "/fapi/v1/time")
+    metadata = broker.get_symbol_metadata(symbol)
+    account = broker.get_account_snapshot(mode="live", daily_realized_pnl=0.0)
+    output = {
+        "mode": "live",
+        "symbol": symbol,
+        "server_time": server_time.get("serverTime"),
+        "symbol_status": metadata.status,
+        "position_mode": account.account_mode,
+        "asset_mode": account.asset_mode,
+        "equity": account.equity,
+        "available_balance": account.available_balance,
+        "open_position_count": account.open_position_count,
+        "orders_submitted": False,
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -260,4 +404,16 @@ def main(argv: list[str] | None = None) -> int:
             repair=args.repair,
             acknowledge=args.i_understand_testnet_order,
         )
+    if args.command == "run-cycle":
+        return run_live_cycle_command(
+            mode=args.mode,
+            db=args.db,
+            symbols=args.symbol,
+            max_symbols=args.max_symbols,
+            lookback_bars=args.lookback_bars,
+            env_file=args.env_file,
+            acknowledge_live=args.i_understand_live_order,
+        )
+    if args.command == "live-smoke":
+        return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)
     return 0
