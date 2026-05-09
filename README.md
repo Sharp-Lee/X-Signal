@@ -532,3 +532,9 @@ daily timer is intended only as a fallback/manual one-shot runner. The live
 service includes `ConditionPathExists=/etc/xsignal/enable-live-trading`, so
 installing the live unit files does not enable live order submission unless the
 operator deliberately creates that file and provides production API keys.
+
+For alpha operations, rehearsals, and incident checks, use the runbook:
+
+```text
+docs/operations/vpe-live-runbook.md
+```
