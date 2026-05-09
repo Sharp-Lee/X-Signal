@@ -113,7 +113,7 @@ def test_status_snapshot_warns_on_unresolved_order_intents(tmp_path):
             price=None,
             stop_price=None,
             created_at=NOW,
-            status=OrderIntentStatus.EXCHANGE_CONFIRMED,
+            status=OrderIntentStatus.PENDING_SUBMIT,
         )
     )
 
@@ -133,6 +133,47 @@ def test_status_snapshot_warns_on_unresolved_order_intents(tmp_path):
     assert snapshot["overall"] == "WARN"
     assert snapshot["orders"]["unresolved"] == 1
     assert "unresolved_order_intents" in snapshot["warnings"]
+
+
+def test_exchange_confirmed_order_intents_are_reported_without_warning(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.CLOSED)
+    store.record_order_intent(
+        OrderIntent(
+            intent_id="intent-1",
+            position_id=position_id,
+            symbol="BTCUSDT",
+            intent_type=OrderIntentType.ENTRY,
+            client_order_id="XV1TEBTC123",
+            side="BUY",
+            quantity=0.001,
+            notional=20.0,
+            price=None,
+            stop_price=None,
+            created_at=NOW,
+            status=OrderIntentStatus.EXCHANGE_CONFIRMED,
+            exchange_status="FILLED",
+            submitted_at=NOW,
+        )
+    )
+
+    snapshot = build_status_snapshot(
+        db_path=tmp_path / "live.sqlite",
+        now=NOW,
+        system_snapshot={
+            "service_active": True,
+            "live_service_active": False,
+            "live_guard_present": False,
+            "revision": "abc123",
+            "sockets": [],
+            "journal": {"reconcile_clean": 1, "stream_errors": 0, "rest_429": 0},
+        },
+    )
+
+    assert snapshot["overall"] == "OK"
+    assert snapshot["orders"]["exchange_confirmed"] == 1
+    assert snapshot["orders"]["unresolved"] == 0
 
 
 def test_status_snapshot_warns_on_socket_queue_and_reconcile_errors(tmp_path):

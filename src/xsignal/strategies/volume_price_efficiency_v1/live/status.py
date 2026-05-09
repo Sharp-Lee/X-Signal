@@ -181,6 +181,7 @@ def render_status_text(snapshot: dict[str, object]) -> str:
     lines.append(f"ACTIVE_POSITIONS {snapshot['positions']['active']}")
     lines.append(f"ERROR_LOCKED_POSITIONS {snapshot['positions']['error_locked']}")
     lines.append(f"UNRESOLVED_ORDER_INTENTS {snapshot['orders']['unresolved']}")
+    lines.append(f"EXCHANGE_CONFIRMED_ORDER_INTENTS {snapshot['orders']['exchange_confirmed']}")
     lines.append(f"JOURNAL {json.dumps(snapshot['journal'], sort_keys=True)}")
     return "\n".join(lines)
 
@@ -246,12 +247,19 @@ def _position_summary(conn: sqlite3.Connection) -> dict[str, int]:
 
 def _order_summary(conn: sqlite3.Connection) -> dict[str, int]:
     if not _table_exists(conn, "order_intents"):
-        return {"unresolved": 0, "errors": 0}
+        return {"unresolved": 0, "exchange_confirmed": 0, "errors": 0}
     unresolved = conn.execute(
-        "select count(*) from order_intents where status not in ('RESOLVED', 'ERROR')"
+        "select count(*) from order_intents where status in ('PENDING_SUBMIT', 'SUBMITTED')"
+    ).fetchone()[0]
+    exchange_confirmed = conn.execute(
+        "select count(*) from order_intents where status = 'EXCHANGE_CONFIRMED'"
     ).fetchone()[0]
     errors = conn.execute("select count(*) from order_intents where status = 'ERROR'").fetchone()[0]
-    return {"unresolved": int(unresolved), "errors": int(errors)}
+    return {
+        "unresolved": int(unresolved),
+        "exchange_confirmed": int(exchange_confirmed),
+        "errors": int(errors),
+    }
 
 
 def _warnings(
