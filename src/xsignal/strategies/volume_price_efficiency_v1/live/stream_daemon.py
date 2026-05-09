@@ -234,6 +234,18 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     stop_event = asyncio.Event()
     recovery_lock = asyncio.Lock()
     counter = _EventCounter(limit=config.stop_after_events)
+    _print_event("startup_recovery_started", mode=config.mode, symbols=len(symbols))
+    await _recover_symbols_1m_gap_async(
+        recovery_lock=recovery_lock,
+        store=store,
+        rest_client=broker.rest_client,
+        aggregator=aggregator,
+        service=service,
+        symbols=symbols,
+        intervals=config.intervals,
+        recovery_sleep_ms=config.recovery_sleep_ms,
+    )
+    _print_event("startup_recovery_finished", mode=config.mode, symbols=len(symbols))
     tasks = [
         asyncio.create_task(
             _consume_stream_url(
@@ -247,6 +259,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
                 counter,
                 config,
                 recovery_lock,
+                recover_before_connect=False,
             )
         )
         for spec in specs
@@ -280,21 +293,25 @@ async def _consume_stream_url(
     counter: "_EventCounter",
     config: StreamDaemonConfig,
     recovery_lock: asyncio.Lock,
+    recover_before_connect: bool = True,
 ) -> None:
     import websockets
 
+    needs_recovery = recover_before_connect
     while not stop_event.is_set():
         try:
-            await _recover_symbols_1m_gap_async(
-                recovery_lock=recovery_lock,
-                store=store,
-                rest_client=rest_client,
-                aggregator=aggregator,
-                service=service,
-                symbols=list(spec.symbols),
-                intervals=config.intervals,
-                recovery_sleep_ms=config.recovery_sleep_ms,
-            )
+            if needs_recovery:
+                await _recover_symbols_1m_gap_async(
+                    recovery_lock=recovery_lock,
+                    store=store,
+                    rest_client=rest_client,
+                    aggregator=aggregator,
+                    service=service,
+                    symbols=list(spec.symbols),
+                    intervals=config.intervals,
+                    recovery_sleep_ms=config.recovery_sleep_ms,
+                )
+            needs_recovery = True
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
                 _print_event("stream_connected", url=spec.url.split("?streams=", 1)[0])
                 async for message in websocket:

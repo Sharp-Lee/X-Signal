@@ -1,13 +1,17 @@
 import asyncio
 from datetime import datetime, timezone
+import sys
 import threading
 import time
+import types
 
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceApiError
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeEventResult
 from xsignal.strategies.volume_price_efficiency_v1.live import stream_daemon as stream_daemon_module
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
+    StreamUrlSpec,
+    _consume_stream_url,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
     _recover_symbols_1m_gap_async,
@@ -387,6 +391,65 @@ def test_async_recovery_serializes_fetches_but_keeps_event_loop_responsive():
 
     assert events.index("tick") < events.index("end-BTCUSDT")
     assert events.index("start-ETHUSDT") > events.index("end-BTCUSDT")
+
+
+def test_consume_stream_url_can_skip_initial_recovery_after_startup(monkeypatch):
+    events = []
+
+    async def fake_recover(**kwargs):
+        events.append("recover")
+
+    class OneMessageSocket:
+        def __init__(self) -> None:
+            self.sent = False
+
+        async def __aenter__(self):
+            events.append("connect")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return (
+                '{"stream":"ethusdt@kline_1m","data":{"e":"kline","E":1778318492123,'
+                '"s":"ETHUSDT","k":{"t":1778313600000,"s":"ETHUSDT","i":"1m","x":false}}}'
+            )
+
+    monkeypatch.setattr(stream_daemon_module, "_recover_symbols_1m_gap_async", fake_recover)
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        types.SimpleNamespace(connect=lambda *args, **kwargs: OneMessageSocket()),
+    )
+
+    async def run() -> None:
+        await _consume_stream_url(
+            StreamUrlSpec(
+                url="wss://stream.binancefuture.com/stream?streams=ethusdt@kline_1m",
+                symbols=("ETHUSDT",),
+            ),
+            FakeRecoveryStore(),
+            FakeRecoveryRestClient(),
+            EmptyAggregator(),
+            ActiveSymbolService(set()),
+            ClosedEntryGate(),
+            asyncio.Event(),
+            stream_daemon_module._EventCounter(limit=1),
+            StreamDaemonConfig(mode="testnet", db_path="live.sqlite", stop_after_events=1),
+            asyncio.Lock(),
+            recover_before_connect=False,
+        )
+
+    asyncio.run(run())
+
+    assert events == ["connect"]
 
 
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
