@@ -42,6 +42,18 @@ class FakeReconcileBroker:
             }
         ]
 
+    def get_all_position_risk(self):
+        self.calls.append(("get_all_position_risk",))
+        return [
+            {
+                "symbol": "BTCUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": self.position_amount,
+                "entryPrice": "100",
+                "markPrice": "101",
+            }
+        ]
+
     def get_open_orders(self, *, symbol):
         self.calls.append(("get_open_orders", symbol))
         return list(self.open_orders)
@@ -152,6 +164,26 @@ def test_reconcile_locks_unprotected_local_open_position_in_read_only_mode(tmp_p
     assert "unprotected" in summary.findings[0].reason
     assert store.get_position_state(position_id) == PositionState.ERROR_LOCKED
     assert not any(call[0] == "market_sell_reduce_only" for call in broker.calls)
+
+
+def test_reconcile_skips_open_order_queries_for_flat_exchange_symbols(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeReconcileBroker(position_amount="0")
+
+    summary = run_reconciliation_pass(
+        store=store,
+        broker=broker,
+        symbols=["BTCUSDT"],
+        environment="testnet",
+        allow_repair=False,
+        now=NOW,
+    )
+
+    assert summary.findings[0].status == ReconcileStatus.CLEAN
+    assert ("get_all_position_risk",) in broker.calls
+    assert not any(call[0] == "get_position_risk" for call in broker.calls)
+    assert not any(call[0] == "get_open_orders" for call in broker.calls)
 
 
 def test_reconcile_repairs_unprotected_owned_long_by_persisting_close_before_submit(tmp_path):

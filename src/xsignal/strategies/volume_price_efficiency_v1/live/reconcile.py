@@ -99,6 +99,7 @@ def run_reconciliation_pass(
     now = now or datetime.now(timezone.utc)
     _refresh_unresolved_intents(store=store, broker=broker, now=now)
     local_positions = store.list_positions_by_states(_LOCAL_RECONCILE_STATES)
+    exchange_positions = _positions_by_symbol(broker.get_all_position_risk())
     findings = []
     for symbol in symbols:
         local_position = _find_latest_position_for_symbol(local_positions, symbol)
@@ -107,6 +108,7 @@ def run_reconciliation_pass(
                 store=store,
                 broker=broker,
                 symbol=symbol,
+                exchange_position=exchange_positions.get(symbol),
                 local_position=local_position,
                 environment=environment,
                 allow_repair=allow_repair,
@@ -197,15 +199,15 @@ def _reconcile_symbol(
     store: LiveStore,
     broker,
     symbol: str,
+    exchange_position,
     local_position,
     environment: str,
     allow_repair: bool,
     now: datetime,
 ) -> ReconcileFinding:
-    position = _find_position(broker.get_position_risk(symbol=symbol), symbol)
-    position_amount = _position_amount(position)
-    open_orders = broker.get_open_orders(symbol=symbol)
-    strategy_stops = [order for order in open_orders if _is_open_strategy_stop(order)]
+    position_amount = _position_amount(
+        exchange_position or {"symbol": symbol, "positionSide": "BOTH", "positionAmt": "0"}
+    )
 
     if position_amount <= 0:
         if local_position is not None and local_position["state"] not in {
@@ -225,6 +227,9 @@ def _reconcile_symbol(
             status=ReconcileStatus.CLEAN,
             reason="Binance position is flat",
         )
+
+    open_orders = broker.get_open_orders(symbol=symbol)
+    strategy_stops = [order for order in open_orders if _is_open_strategy_stop(order)]
 
     if local_position is None:
         return ReconcileFinding(
@@ -376,6 +381,14 @@ def _next_intent_sequence(*, store: LiveStore, position_id: str) -> int:
 def _find_latest_position_for_symbol(local_positions, symbol: str):
     matches = [row for row in local_positions if row["symbol"] == symbol]
     return matches[-1] if matches else None
+
+
+def _positions_by_symbol(payload) -> dict[str, dict]:
+    result = {}
+    for item in payload:
+        if item.get("positionSide", "BOTH") in {"BOTH", "LONG"}:
+            result[str(item.get("symbol"))] = item
+    return result
 
 
 def _find_position(payload, symbol: str) -> dict:
