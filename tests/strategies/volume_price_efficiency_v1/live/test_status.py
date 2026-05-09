@@ -241,6 +241,22 @@ May 09 21:06:41 host xsignal-vpe-live[2]: {"event": "stream_connected", "url": "
     assert summary["stream_connected"] == 1
 
 
+def test_parse_journal_summary_tracks_errors_since_last_clean_reconcile():
+    summary = parse_journal_summary(
+        """
+May 09 21:06:39 host systemd[1]: Started xsignal-vpe-testnet-stream-daemon.service - X-Signal VPE testnet realtime WebSocket trading daemon.
+May 09 21:06:40 host xsignal-vpe-live[2]: {"event": "stream_error", "error": "Binance API error 429 -1003: too many requests"}
+May 09 21:11:40 host xsignal-vpe-live[2]: {"entry_gate": {"allow_entries": true, "reasons": []}, "errors": 0, "event": "reconcile_pass", "status": "clean"}
+May 09 21:11:41 host xsignal-vpe-live[2]: {"event": "stream_connected", "url": "wss://stream.binancefuture.com/stream"}
+        """
+    )
+
+    assert summary["stream_errors"] == 1
+    assert summary["rest_429"] == 1
+    assert summary["stream_errors_since_clean"] == 0
+    assert summary["rest_429_since_clean"] == 0
+
+
 def test_collect_system_snapshot_degrades_when_system_commands_are_unavailable(tmp_path):
     def missing_runner(*args, **kwargs):
         raise FileNotFoundError("systemctl")

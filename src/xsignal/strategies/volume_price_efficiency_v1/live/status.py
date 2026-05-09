@@ -132,12 +132,18 @@ def parse_journal_summary(output: str) -> dict[str, int]:
             continue
         if "reconcile_pass" in line and '"status": "clean"' in line:
             summary["reconcile_clean"] += 1
+            summary["reconcile_error_since_clean"] = 0
+            summary["stream_errors_since_clean"] = 0
+            summary["rest_429_since_clean"] = 0
         if "reconcile_pass" in line and '"status": "error"' in line:
             summary["reconcile_error"] += 1
+            summary["reconcile_error_since_clean"] += 1
         if '"event": "stream_error"' in line:
             summary["stream_errors"] += 1
+            summary["stream_errors_since_clean"] += 1
         if "-1003" in line or " 429 " in line:
             summary["rest_429"] += 1
+            summary["rest_429_since_clean"] += 1
         if '"event": "stream_connected"' in line:
             summary["stream_connected"] += 1
         if '"event": "strategy_action"' in line:
@@ -149,8 +155,11 @@ def _empty_journal_summary() -> dict[str, int]:
     return {
         "reconcile_clean": 0,
         "reconcile_error": 0,
+        "reconcile_error_since_clean": 0,
         "stream_errors": 0,
+        "stream_errors_since_clean": 0,
         "rest_429": 0,
+        "rest_429_since_clean": 0,
         "stream_connected": 0,
         "strategy_actions": 0,
     }
@@ -291,11 +300,11 @@ def _warnings(
             warnings.append("live_guard_present")
         if any(socket["recv_q"] or socket["send_q"] for socket in sockets):
             warnings.append("socket_queue_nonzero")
-        if int(journal.get("rest_429", 0)) > 0:
+        if int(journal.get("rest_429_since_clean", journal.get("rest_429", 0))) > 0:
             warnings.append("recent_rest_429")
-        if int(journal.get("stream_errors", 0)) > 0:
+        if int(journal.get("stream_errors_since_clean", journal.get("stream_errors", 0))) > 0:
             warnings.append("recent_stream_errors")
-        if int(journal.get("reconcile_error", 0)) > 0:
+        if int(journal.get("reconcile_error_since_clean", journal.get("reconcile_error", 0))) > 0:
             warnings.append("recent_reconcile_errors")
         if int(journal.get("reconcile_clean", 0)) == 0:
             warnings.append("no_recent_clean_reconcile")
