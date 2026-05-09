@@ -71,6 +71,22 @@ def _account() -> AccountSnapshot:
     )
 
 
+def _account_with(**overrides) -> AccountSnapshot:
+    data = {
+        "mode": "testnet",
+        "account_mode": "one_way",
+        "asset_mode": "single_asset_usdt",
+        "equity": 1000.0,
+        "available_balance": 1000.0,
+        "open_notional": 0.0,
+        "open_position_count": 0,
+        "daily_realized_pnl": 0.0,
+        "captured_at": NOW,
+    }
+    data.update(overrides)
+    return AccountSnapshot(**data)
+
+
 def _arrays(symbols=("BTCUSDT", "ETHUSDT")) -> OhlcvArrays:
     times = np.array(
         [
@@ -129,6 +145,84 @@ def test_run_live_cycle_reconciles_before_opening_signal(tmp_path):
     assert reconcile_calls == [("reconcile", ("BTCUSDT", "ETHUSDT"))]
     assert result.entries == 1
     assert broker.calls[0][0] == "market_buy"
+
+
+def test_run_live_cycle_rejects_new_entry_when_max_positions_reached(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeCycleBroker()
+    signal = np.array([[False], [True]])
+
+    result = run_live_cycle(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(max_open_positions=1),
+        environment="testnet",
+        arrays=_arrays(("BTCUSDT",)),
+        account=_account_with(open_position_count=1),
+        metadata_by_symbol={"BTCUSDT": _metadata("BTCUSDT")},
+        prices_by_symbol={"BTCUSDT": 100.0},
+        now=NOW,
+        reconcile_runner=_reconcile_ok([]),
+        signal_mask_builder=lambda arrays, config: signal,
+        feature_builder=lambda arrays: _features(arrays),
+    )
+
+    assert result.signal_count == 1
+    assert result.entries == 0
+    assert not any(call[0] == "market_buy" for call in broker.calls)
+
+
+def test_run_live_cycle_rejects_new_entry_after_daily_loss_limit(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeCycleBroker()
+    signal = np.array([[False], [True]])
+
+    result = run_live_cycle(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(max_daily_realized_loss=50.0),
+        environment="testnet",
+        arrays=_arrays(("BTCUSDT",)),
+        account=_account_with(daily_realized_pnl=-50.0),
+        metadata_by_symbol={"BTCUSDT": _metadata("BTCUSDT")},
+        prices_by_symbol={"BTCUSDT": 100.0},
+        now=NOW,
+        reconcile_runner=_reconcile_ok([]),
+        signal_mask_builder=lambda arrays, config: signal,
+        feature_builder=lambda arrays: _features(arrays),
+    )
+
+    assert result.signal_count == 1
+    assert result.entries == 0
+    assert not any(call[0] == "market_buy" for call in broker.calls)
+
+
+def test_run_live_cycle_allocates_from_one_shared_snapshot_within_cycle(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FakeCycleBroker()
+    signal = np.array([[False, False], [True, True]])
+
+    result = run_live_cycle(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(max_open_positions=5, total_open_notional_cap=100.0),
+        environment="testnet",
+        arrays=_arrays(("BTCUSDT", "ETHUSDT")),
+        account=_account_with(open_notional=80.0, open_position_count=4),
+        metadata_by_symbol={"BTCUSDT": _metadata("BTCUSDT"), "ETHUSDT": _metadata("ETHUSDT")},
+        prices_by_symbol={"BTCUSDT": 100.0, "ETHUSDT": 100.0},
+        now=NOW,
+        reconcile_runner=_reconcile_ok([]),
+        signal_mask_builder=lambda arrays, config: signal,
+        feature_builder=lambda arrays: _features(arrays),
+    )
+
+    assert result.signal_count == 2
+    assert result.entries == 1
+    assert [call[1] for call in broker.calls if call[0] == "market_buy"] == ["BTCUSDT"]
 
 
 def test_run_live_cycle_ignores_signal_when_symbol_already_open(tmp_path):
@@ -228,7 +322,7 @@ def test_run_live_cycle_submits_pyramid_add_when_execution_price_confirms(tmp_pa
             symbol="BTCUSDT",
             state=PositionState.OPEN,
             entry_price=100.0,
-            quantity=0.2,
+            quantity=0.1,
             highest_high=100.0,
             stop_price=80.0,
             atr_at_entry=5.0,
@@ -256,4 +350,47 @@ def test_run_live_cycle_submits_pyramid_add_when_execution_price_confirms(tmp_pa
     )
 
     assert result.adds == 1
-    assert get_live_position(store, position_id).quantity == 0.4
+    assert get_live_position(store, position_id).quantity == 0.2
+
+
+def test_run_live_cycle_rejects_pyramid_add_when_shared_cap_exhausted(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    position_id = store.create_position(symbol="BTCUSDT", state=PositionState.OPEN)
+    update_live_position(
+        store,
+        LivePositionRecord(
+            position_id=position_id,
+            symbol="BTCUSDT",
+            state=PositionState.OPEN,
+            entry_price=100.0,
+            quantity=0.1,
+            highest_high=100.0,
+            stop_price=80.0,
+            atr_at_entry=5.0,
+            next_add_trigger=105.0,
+            add_count=0,
+            active_stop_client_order_id="stop",
+            last_decision_open_time=None,
+        ),
+    )
+    broker = FakeCycleBroker()
+
+    result = run_live_cycle(
+        store=store,
+        broker=broker,
+        config=LiveTradingConfig(total_open_notional_cap=100.0),
+        environment="testnet",
+        arrays=_arrays(("BTCUSDT",)),
+        account=_account_with(open_notional=98.0),
+        metadata_by_symbol={"BTCUSDT": _metadata("BTCUSDT")},
+        prices_by_symbol={"BTCUSDT": 106.0},
+        now=NOW,
+        reconcile_runner=_reconcile_ok([]),
+        signal_mask_builder=lambda arrays, config: np.array([[False], [False]]),
+        feature_builder=lambda arrays: _features(arrays),
+    )
+
+    assert result.adds == 0
+    assert get_live_position(store, position_id).quantity == 0.1
+    assert not any(call[0] == "market_buy" for call in broker.calls)

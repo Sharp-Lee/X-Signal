@@ -19,6 +19,9 @@ from xsignal.strategies.volume_price_efficiency_v1.live.execution import (
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.models import (
     AccountSnapshot,
+    OrderIntent,
+    OrderIntentType,
+    PositionState,
     SymbolMetadata,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import SymbolRules
@@ -27,6 +30,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.position_store import (
     update_live_position,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
+from xsignal.strategies.volume_price_efficiency_v1.live.risk import evaluate_intent
 from xsignal.strategies.volume_price_efficiency_v1.live.signal_engine import build_live_signal_mask
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 
@@ -97,6 +101,7 @@ def run_live_cycle(
     latest_index = arrays.open.shape[0] - 1
     latest_signals = signal_mask[latest_index]
     active_by_symbol = {record.symbol: record for record in list_active_live_positions(store)}
+    planned_account = account
 
     stop_updates = 0
     adds = 0
@@ -132,6 +137,27 @@ def run_live_cycle(
             and bar_high >= updated_record.next_add_trigger
             and prices_by_symbol.get(symbol, 0.0) >= updated_record.next_add_trigger
         ):
+            add_notional = updated_record.quantity * prices_by_symbol[symbol]
+            metadata = metadata_by_symbol.get(symbol)
+            if metadata is None or not _risk_accepted(
+                config=config,
+                environment=environment,
+                intent_type=OrderIntentType.PYRAMID_ADD,
+                symbol=symbol,
+                side="BUY",
+                quantity=updated_record.quantity,
+                notional=add_notional,
+                metadata=metadata,
+                account=planned_account,
+                position_state=PositionState.OPEN,
+                now=now,
+            ):
+                updated_record = replace(
+                    updated_record,
+                    last_decision_open_time=arrays.open_times[latest_index],
+                )
+                update_live_position(store, updated_record)
+                continue
             updated_record = submit_pyramid_add(
                 store=store,
                 broker=broker,
@@ -140,6 +166,11 @@ def run_live_cycle(
                 quantity=updated_record.quantity,
                 execution_price=prices_by_symbol[symbol],
                 now=now,
+            )
+            planned_account = _reserve_account(
+                planned_account,
+                notional=add_notional,
+                position_delta=0,
             )
             adds += 1
         updated_record = replace(
@@ -157,7 +188,7 @@ def run_live_cycle(
         atr = features.atr[latest_index, s_index]
         if metadata is None or price is None or not np.isfinite(atr) or atr <= 0:
             continue
-        notional = size_entry_notional(config, account)
+        notional = size_entry_notional(config, planned_account)
         if notional <= 0:
             continue
         try:
@@ -166,6 +197,21 @@ def run_live_cycle(
                 price=price,
             )
         except ValueError:
+            continue
+        entry_notional = float(quantity) * price
+        if not _risk_accepted(
+            config=config,
+            environment=environment,
+            intent_type=OrderIntentType.ENTRY,
+            symbol=symbol,
+            side="BUY",
+            quantity=float(quantity),
+            notional=entry_notional,
+            metadata=metadata,
+            account=planned_account,
+            position_state=PositionState.FLAT,
+            now=now,
+        ):
             continue
         enter_long_with_protection(
             store=store,
@@ -178,6 +224,11 @@ def run_live_cycle(
             atr=float(atr),
             now=now,
         )
+        planned_account = _reserve_account(
+            planned_account,
+            notional=entry_notional,
+            position_delta=1,
+        )
         entries += 1
         active_by_symbol[symbol] = list_active_live_positions(store)[-1]
 
@@ -187,4 +238,55 @@ def run_live_cycle(
         entries=entries,
         stop_updates=stop_updates,
         adds=adds,
+    )
+
+
+def _risk_accepted(
+    *,
+    config: LiveTradingConfig,
+    environment: str,
+    intent_type: OrderIntentType,
+    symbol: str,
+    side: str,
+    quantity: float,
+    notional: float,
+    metadata: SymbolMetadata,
+    account: AccountSnapshot,
+    position_state: PositionState,
+    now: datetime,
+) -> bool:
+    risk = evaluate_intent(
+        config=config,
+        intent=OrderIntent(
+            intent_id=f"risk-check-{intent_type.value}-{environment}-{symbol}",
+            position_id=f"{symbol}-risk-check",
+            symbol=symbol,
+            intent_type=intent_type,
+            client_order_id=f"risk-check-{intent_type.value}-{environment}-{symbol}",
+            side=side,
+            quantity=quantity,
+            notional=notional,
+            price=None,
+            stop_price=None,
+            created_at=now,
+        ),
+        metadata=metadata,
+        account=account,
+        position_state=position_state,
+        now=now,
+    )
+    return risk.accepted
+
+
+def _reserve_account(
+    account: AccountSnapshot,
+    *,
+    notional: float,
+    position_delta: int,
+) -> AccountSnapshot:
+    return replace(
+        account,
+        available_balance=max(account.available_balance - notional, 0.0),
+        open_notional=account.open_notional + notional,
+        open_position_count=account.open_position_count + position_delta,
     )
