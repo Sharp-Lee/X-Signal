@@ -204,10 +204,26 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
             "xsignal-vpe-testnet-stream-daemon.service",
         ]
     )
+    deploy_verify_args = parser.parse_args(
+        [
+            "testnet-deploy-verify",
+            "--db",
+            str(tmp_path / "live.sqlite"),
+            "--symbol",
+            "ADAUSDT",
+            "--notional",
+            "8",
+            "--stop-offset-pct",
+            "0.05",
+            "--env-file",
+            str(tmp_path / "binance-testnet.env"),
+        ]
+    )
 
     assert "testnet-open-protected" in subcommands
     assert "testnet-close-protected" in subcommands
     assert "testnet-rehearsal" in subcommands
+    assert "testnet-deploy-verify" in subcommands
     assert open_args.command == "testnet-open-protected"
     assert open_args.db == tmp_path / "live.sqlite"
     assert open_args.symbol == "SOLUSDT"
@@ -225,6 +241,10 @@ def test_cli_has_guarded_testnet_rehearsal_commands(tmp_path):
     assert rehearsal_args.service_name == "xsignal-vpe-testnet-stream-daemon.service"
     assert not rehearsal_args.skip_restart
     assert not rehearsal_args.i_understand_testnet_order
+    assert deploy_verify_args.command == "testnet-deploy-verify"
+    assert deploy_verify_args.symbol == "ADAUSDT"
+    assert deploy_verify_args.notional == 8.0
+    assert not deploy_verify_args.i_understand_testnet_order
 
 
 def test_cli_has_run_cycle_and_live_smoke_commands(tmp_path):
@@ -534,6 +554,24 @@ def test_testnet_rehearsal_requires_explicit_acknowledgement(tmp_path, capsys):
     assert "--i-understand-testnet-order" in captured.err
 
 
+def test_testnet_deploy_verify_requires_explicit_acknowledgement(tmp_path, capsys):
+    result = cli.run_testnet_deploy_verify_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=False,
+        acknowledge=False,
+        broker=object(),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "--i-understand-testnet-order" in captured.err
+
+
 def test_testnet_open_protected_runs_runner_and_prints_result(tmp_path, capsys):
     calls = []
 
@@ -688,6 +726,42 @@ def test_testnet_rehearsal_runs_runner_and_returns_nonzero_on_reconcile_error(
     assert calls[0]["restart_service"] is False
     assert calls[0]["service_name"] == "svc"
     assert '"status": "ERROR"' in captured.out
+    assert "secret" not in captured.out.lower()
+
+
+def test_testnet_deploy_verify_runs_runner_and_returns_nonzero_on_error(tmp_path, capsys):
+    calls = []
+
+    def fake_runner(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="ERROR",
+            to_dict=lambda: {
+                "status": "ERROR",
+                "checks": {"pre_status_ok": False},
+                "errors": ["pre_status_not_ok"],
+            },
+        )
+
+    result = cli.run_testnet_deploy_verify_command(
+        db=tmp_path / "live.sqlite",
+        symbol="ADAUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        env_file=None,
+        service_name="svc",
+        skip_restart=True,
+        acknowledge=True,
+        broker=object(),
+        verify_runner=fake_runner,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert calls[0]["restart_service"] is False
+    assert calls[0]["service_name"] == "svc"
+    assert calls[0]["db_path"] == tmp_path / "live.sqlite"
+    assert '"pre_status_not_ok"' in captured.out
     assert "secret" not in captured.out.lower()
 
 

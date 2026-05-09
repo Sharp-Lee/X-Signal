@@ -265,6 +265,17 @@ read-only reconciliation. A healthy report has top-level `"status": "OK"`,
 `protected_reconcile.error_count = 0`, `post_restart_reconcile.error_count = 0`,
 `close.final_position_amount = 0`, and `final_reconcile.error_count = 0`.
 
+For a deployment gate, use the wrapper command:
+
+```bash
+ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=18 alpha '/opt/x-signal/.venv/bin/xsignal-vpe-live testnet-deploy-verify --db /var/lib/xsignal/live/vpe-testnet.sqlite --env-file /etc/xsignal/binance-testnet.env --symbol ADAUSDT --notional 8 --stop-offset-pct 0.05 --i-understand-testnet-order'
+```
+
+`testnet-deploy-verify` first checks status and skips order submission if the
+daemon is already unhealthy. If pre-status is clean, it runs the one-shot
+rehearsal, checks final status, verifies recent journal health, and returns
+non-zero unless the top-level deployment report is `"status": "OK"`.
+
 ## Deployment To Alpha
 
 From the active worktree:

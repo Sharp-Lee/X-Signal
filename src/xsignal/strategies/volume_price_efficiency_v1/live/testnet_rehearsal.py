@@ -27,6 +27,10 @@ from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import (
     ReconcileSummary,
     run_reconciliation_pass,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.status import (
+    build_status_snapshot,
+    collect_system_snapshot,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 
 
@@ -74,6 +78,100 @@ class TestnetRehearsalReport:
             "close": vars(self.close),
             "final_reconcile": self.final_reconcile.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class TestnetDeployVerifyReport:
+    status: str
+    pre_status: dict[str, object]
+    rehearsal: TestnetRehearsalReport | None
+    post_status: dict[str, object] | None
+    checks: dict[str, bool]
+    errors: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "pre_status": self.pre_status,
+            "rehearsal": self.rehearsal.to_dict() if self.rehearsal is not None else None,
+            "post_status": self.post_status,
+            "checks": self.checks,
+            "errors": list(self.errors),
+        }
+
+
+def run_testnet_deploy_verify(
+    *,
+    store: LiveStore,
+    db_path,
+    broker,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    service_name: str,
+    restart_service: bool = True,
+    restart_runner=None,
+    sleep_after_restart_seconds: float = 4.0,
+    status_collector=None,
+    rehearsal_runner=None,
+    now: datetime | None = None,
+) -> TestnetDeployVerifyReport:
+    status_collector = status_collector or (
+        lambda: build_status_snapshot(
+            db_path=db_path,
+            system_snapshot=collect_system_snapshot(service=service_name),
+        )
+    )
+    pre_status = status_collector()
+    pre_ok = _status_is_ok(pre_status)
+    if not pre_ok:
+        return TestnetDeployVerifyReport(
+            status="ERROR",
+            pre_status=pre_status,
+            rehearsal=None,
+            post_status=None,
+            checks={
+                "pre_status_ok": False,
+                "rehearsal_ok": False,
+                "post_status_ok": False,
+                "post_journal_clean": False,
+                "live_guard_absent": not bool(pre_status.get("live_guard_present", False)),
+                "live_service_inactive": not bool(pre_status.get("live_service_active", False)),
+            },
+            errors=("pre_status_not_ok",),
+        )
+
+    rehearsal_runner = rehearsal_runner or run_testnet_rehearsal
+    rehearsal = rehearsal_runner(
+        store=store,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        service_name=service_name,
+        restart_service=restart_service,
+        restart_runner=restart_runner,
+        sleep_after_restart_seconds=sleep_after_restart_seconds,
+        now=now,
+    )
+    post_status = status_collector()
+    checks = {
+        "pre_status_ok": pre_ok,
+        "rehearsal_ok": rehearsal.status == "OK",
+        "post_status_ok": _status_is_ok(post_status),
+        "post_journal_clean": _journal_clean(post_status),
+        "live_guard_absent": not bool(post_status.get("live_guard_present", False)),
+        "live_service_inactive": not bool(post_status.get("live_service_active", False)),
+    }
+    errors = tuple(name for name, ok in checks.items() if not ok)
+    return TestnetDeployVerifyReport(
+        status="OK" if not errors else "ERROR",
+        pre_status=pre_status,
+        rehearsal=rehearsal,
+        post_status=post_status,
+        checks=checks,
+        errors=errors,
+    )
 
 
 def run_testnet_rehearsal(
@@ -178,6 +276,19 @@ def run_testnet_rehearsal(
         post_restart_reconcile=post_restart_reconcile,
         close=closed,
         final_reconcile=final_reconcile,
+    )
+
+
+def _status_is_ok(snapshot: dict[str, object]) -> bool:
+    return snapshot.get("overall") == "OK"
+
+
+def _journal_clean(snapshot: dict[str, object]) -> bool:
+    journal = snapshot.get("journal") or {}
+    return (
+        int(journal.get("rest_429_since_clean", journal.get("rest_429", 0))) == 0
+        and int(journal.get("stream_errors_since_clean", journal.get("stream_errors", 0))) == 0
+        and int(journal.get("reconcile_error_since_clean", journal.get("reconcile_error", 0))) == 0
     )
 
 

@@ -452,6 +452,23 @@ position through the audited reduce-only path, and runs a final read-only
 reconciliation. It returns non-zero if any reconciliation step reports an error
 or the close verification is not flat.
 
+For deployment gating, run the verify wrapper:
+
+```bash
+xsignal-vpe-live testnet-deploy-verify \
+  --db data/live/vpe-testnet.sqlite \
+  --env-file /etc/xsignal/binance-testnet.env \
+  --symbol ADAUSDT \
+  --notional 8 \
+  --stop-offset-pct 0.05 \
+  --i-understand-testnet-order
+```
+
+It checks pre-deploy status first and skips testnet order submission when the
+daemon is already unhealthy. When pre-status is clean, it runs
+`testnet-rehearsal`, collects final status, checks recent journal health, and
+returns non-zero unless the whole deployment gate is clean.
+
 ## VPE Automatic Live Cycle
 
 The preferred automatic runner is the realtime WebSocket daemon. In steady

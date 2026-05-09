@@ -39,6 +39,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.testnet_lifecycle import
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
     close_rehearsal_position,
     open_protected_rehearsal_position,
+    run_testnet_deploy_verify,
     run_testnet_rehearsal,
 )
 
@@ -110,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
     testnet_rehearsal.add_argument("--service-name", default=DEFAULT_TESTNET_STREAM_SERVICE)
     testnet_rehearsal.add_argument("--skip-restart", action="store_true")
     testnet_rehearsal.add_argument("--i-understand-testnet-order", action="store_true")
+
+    testnet_deploy_verify = subparsers.add_parser("testnet-deploy-verify")
+    testnet_deploy_verify.add_argument("--db", type=Path, required=True)
+    testnet_deploy_verify.add_argument("--symbol", required=True)
+    testnet_deploy_verify.add_argument("--notional", type=float, required=True)
+    testnet_deploy_verify.add_argument("--stop-offset-pct", type=float, default=0.05)
+    testnet_deploy_verify.add_argument("--env-file", type=Path)
+    testnet_deploy_verify.add_argument("--service-name", default=DEFAULT_TESTNET_STREAM_SERVICE)
+    testnet_deploy_verify.add_argument("--skip-restart", action="store_true")
+    testnet_deploy_verify.add_argument("--i-understand-testnet-order", action="store_true")
 
     run_cycle = subparsers.add_parser("run-cycle")
     run_cycle.add_argument("--mode", choices=["testnet", "live"], required=True)
@@ -466,6 +477,53 @@ def run_testnet_rehearsal_command(
     return 0 if result.status == "OK" else 1
 
 
+def run_testnet_deploy_verify_command(
+    *,
+    db: Path,
+    symbol: str,
+    notional: float,
+    stop_offset_pct: float,
+    env_file: Path | None,
+    service_name: str,
+    skip_restart: bool,
+    acknowledge: bool,
+    rest_client=None,
+    broker=None,
+    verify_runner=run_testnet_deploy_verify,
+) -> int:
+    if not acknowledge:
+        print(
+            "testnet-deploy-verify requires --i-understand-testnet-order",
+            file=sys.stderr,
+        )
+        return 2
+    rest_client = rest_client or (
+        None if broker is not None else _build_testnet_rest_client(env_file=env_file)
+    )
+    if rest_client is None and broker is None:
+        print(
+            "BINANCE_API_KEY and BINANCE_SECRET_KEY are required for testnet-deploy-verify",
+            file=sys.stderr,
+        )
+        return 2
+
+    broker = broker or BinanceUsdFuturesTestnetBroker(rest_client)
+    store = LiveStore.open(db)
+    store.initialize()
+    result = verify_runner(
+        store=store,
+        db_path=db,
+        broker=broker,
+        symbol=symbol,
+        notional=notional,
+        stop_offset_pct=stop_offset_pct,
+        service_name=service_name,
+        restart_service=not skip_restart,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0 if result.status == "OK" else 1
+
+
 def run_status_command(
     *,
     db: Path,
@@ -713,6 +771,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "testnet-rehearsal":
         return run_testnet_rehearsal_command(
+            db=args.db,
+            symbol=args.symbol,
+            notional=args.notional,
+            stop_offset_pct=args.stop_offset_pct,
+            env_file=args.env_file,
+            service_name=args.service_name,
+            skip_restart=args.skip_restart,
+            acknowledge=args.i_understand_testnet_order,
+        )
+    if args.command == "testnet-deploy-verify":
+        return run_testnet_deploy_verify_command(
             db=args.db,
             symbol=args.symbol,
             notional=args.notional,

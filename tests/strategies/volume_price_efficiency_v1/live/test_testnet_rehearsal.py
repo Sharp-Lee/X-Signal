@@ -16,6 +16,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.store import LiveStore
 from xsignal.strategies.volume_price_efficiency_v1.live.testnet_rehearsal import (
     close_rehearsal_position,
     open_protected_rehearsal_position,
+    run_testnet_deploy_verify,
     run_testnet_rehearsal,
 )
 
@@ -380,3 +381,88 @@ def test_run_testnet_rehearsal_closes_position_when_restart_fails(tmp_path):
     assert report.close.final_position_amount == 0.0
     assert report.final_reconcile.error_count == 0
     assert get_live_position(store, report.open.position_id).state == PositionState.CLOSED
+
+
+def _ok_status() -> dict:
+    return {
+        "overall": "OK",
+        "warnings": [],
+        "service_active": True,
+        "live_service_active": False,
+        "live_guard_present": False,
+        "journal": {
+            "rest_429_since_clean": 0,
+            "stream_errors_since_clean": 0,
+            "reconcile_error_since_clean": 0,
+        },
+    }
+
+
+def test_run_testnet_deploy_verify_checks_status_rehearsal_and_final_status(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+    broker = FullRehearsalBroker(store)
+    status_calls = []
+
+    def status_collector():
+        status_calls.append(len(status_calls) + 1)
+        return _ok_status()
+
+    report = run_testnet_deploy_verify(
+        store=store,
+        db_path=tmp_path / "live.sqlite",
+        broker=broker,
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        service_name="xsignal-vpe-testnet-stream-daemon.service",
+        status_collector=status_collector,
+        restart_runner=lambda service_name: None,
+        sleep_after_restart_seconds=0,
+        now=NOW,
+    )
+
+    assert report.status == "OK"
+    assert status_calls == [1, 2]
+    assert report.pre_status["overall"] == "OK"
+    assert report.rehearsal is not None
+    assert report.rehearsal.status == "OK"
+    assert report.post_status["overall"] == "OK"
+    assert report.checks == {
+        "pre_status_ok": True,
+        "rehearsal_ok": True,
+        "post_status_ok": True,
+        "post_journal_clean": True,
+        "live_guard_absent": True,
+        "live_service_inactive": True,
+    }
+
+
+def test_run_testnet_deploy_verify_skips_rehearsal_when_pre_status_warn(tmp_path):
+    store = LiveStore.open(tmp_path / "live.sqlite")
+    store.initialize()
+
+    def warn_status():
+        status = _ok_status()
+        status["overall"] = "WARN"
+        status["warnings"] = ["socket_queue_nonzero"]
+        return status
+
+    report = run_testnet_deploy_verify(
+        store=store,
+        db_path=tmp_path / "live.sqlite",
+        broker=object(),
+        symbol="SOLUSDT",
+        notional=8.0,
+        stop_offset_pct=0.05,
+        service_name="xsignal-vpe-testnet-stream-daemon.service",
+        status_collector=warn_status,
+        restart_runner=lambda service_name: None,
+        sleep_after_restart_seconds=0,
+        now=NOW,
+    )
+
+    assert report.status == "ERROR"
+    assert report.rehearsal is None
+    assert report.post_status is None
+    assert "pre_status_not_ok" in report.errors
