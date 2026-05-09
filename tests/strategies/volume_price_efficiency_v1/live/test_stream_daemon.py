@@ -13,6 +13,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     StreamUrlSpec,
     _consume_stream_url,
+    _next_stream_message_or_rotate,
     _poll_closed_1m_once_async,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
@@ -20,6 +21,8 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     _should_parse_stream_message,
     _should_parse_stream_payload,
     _stream_error_backoff_seconds,
+    _stream_rotation_deadline,
+    _StreamRotationDue,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
     seed_rolling_buffers_from_store,
@@ -231,7 +234,9 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     config = StreamDaemonConfig(mode="testnet", db_path="live.sqlite")
     assert config.intervals == ("1h", "4h", "1d")
     assert config.lookback_bars == 120
-    assert config.max_streams == 25
+    assert config.max_streams == 200
+    assert config.stream_max_lifetime_seconds == 82_800
+    assert config.stream_rotation_jitter_seconds == 1_800
     assert config.seed_sleep_ms == 20
     assert config.recovery_sleep_ms == 500
     assert config.closed_poll_fetch_limit == 99
@@ -394,6 +399,53 @@ def test_stream_error_backoff_honors_binance_ban_until_timestamp(monkeypatch):
         )
         == 380.518
     )
+
+
+def test_stream_rotation_deadline_spreads_connections_before_binance_hard_cutoff():
+    config = StreamDaemonConfig(
+        mode="testnet",
+        db_path="live.sqlite",
+        stream_max_lifetime_seconds=100,
+        stream_rotation_jitter_seconds=30,
+    )
+
+    first = _stream_rotation_deadline(
+        StreamUrlSpec(url="wss://example", symbols=("BTCUSDT", "ETHUSDT")),
+        config=config,
+        now_monotonic=1_000,
+    )
+    second = _stream_rotation_deadline(
+        StreamUrlSpec(url="wss://example", symbols=("SOLUSDT", "XRPUSDT")),
+        config=config,
+        now_monotonic=1_000,
+    )
+
+    assert 1_070 <= first <= 1_100
+    assert 1_070 <= second <= 1_100
+    assert first != second
+
+
+def test_next_stream_message_raises_rotation_due_when_lifetime_expires():
+    class QuietIterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(60)
+            raise AssertionError("rotation should happen before the next message")
+
+    async def run() -> None:
+        try:
+            await _next_stream_message_or_rotate(
+                QuietIterator(),
+                rotation_deadline=asyncio.get_running_loop().time() + 0.01,
+                monotonic=asyncio.get_running_loop().time,
+            )
+        except _StreamRotationDue:
+            return
+        raise AssertionError("expected stream rotation")
+
+    asyncio.run(run())
 
 
 def test_startup_step_retries_rate_limit_without_crashing_systemd_loop(monkeypatch):

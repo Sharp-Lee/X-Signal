@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -50,8 +51,14 @@ from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
 
 
 DEFAULT_REALTIME_INTERVALS = ("1h", "4h", "1d")
-DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 25
+DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 200
+DEFAULT_STREAM_MAX_LIFETIME_SECONDS = 23 * 60 * 60
+DEFAULT_STREAM_ROTATION_JITTER_SECONDS = 30 * 60
 _T = TypeVar("_T")
+
+
+class _StreamRotationDue(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,8 @@ class StreamDaemonConfig:
     lookback_bars: int = 120
     max_symbols: int | None = None
     max_streams: int = DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION
+    stream_max_lifetime_seconds: float = DEFAULT_STREAM_MAX_LIFETIME_SECONDS
+    stream_rotation_jitter_seconds: float = DEFAULT_STREAM_ROTATION_JITTER_SECONDS
     reconnect_backoff_seconds: float = 5.0
     rate_limit_backoff_seconds: float = 60.0
     reconcile_interval_seconds: float = 300.0
@@ -85,6 +94,12 @@ class StreamDaemonConfig:
             raise ValueError("lookback_bars must be positive")
         if self.max_symbols is not None and self.max_symbols <= 0:
             raise ValueError("max_symbols must be positive")
+        if self.max_streams <= 0:
+            raise ValueError("max_streams must be positive")
+        if self.stream_max_lifetime_seconds < 0:
+            raise ValueError("stream_max_lifetime_seconds must be non-negative")
+        if self.stream_rotation_jitter_seconds < 0:
+            raise ValueError("stream_rotation_jitter_seconds must be non-negative")
         if self.rate_limit_backoff_seconds < 0:
             raise ValueError("rate_limit_backoff_seconds must be non-negative")
         if self.recovery_sleep_ms < 0:
@@ -144,6 +159,46 @@ def _chunk_symbols(symbols: list[str], *, max_streams: int) -> list[tuple[str, .
         tuple(symbols[index : index + max_streams])
         for index in range(0, len(symbols), max_streams)
     ]
+
+
+def _stream_rotation_deadline(
+    spec: StreamUrlSpec,
+    *,
+    config: StreamDaemonConfig,
+    now_monotonic: float | None = None,
+) -> float | None:
+    if config.stream_max_lifetime_seconds <= 0:
+        return None
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    jitter = _stream_rotation_jitter_seconds(spec, config=config)
+    return now + max(config.stream_max_lifetime_seconds - jitter, 0.0)
+
+
+def _stream_rotation_jitter_seconds(spec: StreamUrlSpec, *, config: StreamDaemonConfig) -> float:
+    max_jitter = min(config.stream_rotation_jitter_seconds, config.stream_max_lifetime_seconds)
+    if max_jitter <= 0:
+        return 0.0
+    seed = "|".join(spec.symbols) or spec.url
+    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=8).digest()
+    fraction = int.from_bytes(digest, "big") / ((1 << 64) - 1)
+    return fraction * max_jitter
+
+
+async def _next_stream_message_or_rotate(
+    stream_iterator,
+    *,
+    rotation_deadline: float | None,
+    monotonic=time.monotonic,
+) -> str | bytes:
+    if rotation_deadline is None:
+        return await stream_iterator.__anext__()
+    remaining = rotation_deadline - monotonic()
+    if remaining <= 0:
+        raise _StreamRotationDue
+    try:
+        return await asyncio.wait_for(stream_iterator.__anext__(), timeout=remaining)
+    except asyncio.TimeoutError as exc:
+        raise _StreamRotationDue from exc
 
 
 def seed_rolling_buffers(
@@ -543,7 +598,24 @@ async def _consume_active_position_stream_url(
                     symbols=len(spec.symbols),
                     purpose="active_positions",
                 )
-                async for message in websocket:
+                rotation_deadline = _stream_rotation_deadline(spec, config=config)
+                stream_iterator = websocket.__aiter__()
+                while not stop_event.is_set():
+                    try:
+                        message = await _next_stream_message_or_rotate(
+                            stream_iterator,
+                            rotation_deadline=rotation_deadline,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except _StreamRotationDue:
+                        _print_event(
+                            "stream_rotation_due",
+                            url=spec.url.split("?streams=", 1)[0],
+                            symbols=len(spec.symbols),
+                            purpose="active_positions",
+                        )
+                        break
                     if stop_event.is_set():
                         return
                     payload = json.loads(message)
@@ -607,7 +679,24 @@ async def _consume_full_universe_stream_url(
                     symbols=len(spec.symbols),
                     purpose="full_universe_market_data",
                 )
-                async for message in websocket:
+                rotation_deadline = _stream_rotation_deadline(spec, config=config)
+                stream_iterator = websocket.__aiter__()
+                while not stop_event.is_set():
+                    try:
+                        message = await _next_stream_message_or_rotate(
+                            stream_iterator,
+                            rotation_deadline=rotation_deadline,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except _StreamRotationDue:
+                        _print_event(
+                            "stream_rotation_due",
+                            url=spec.url.split("?streams=", 1)[0],
+                            symbols=len(spec.symbols),
+                            purpose="full_universe_market_data",
+                        )
+                        break
                     if stop_event.is_set():
                         return
                     payload = json.loads(message)
@@ -669,7 +758,23 @@ async def _consume_stream_url(
             needs_recovery = True
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
                 _print_event("stream_connected", url=spec.url.split("?streams=", 1)[0])
-                async for message in websocket:
+                rotation_deadline = _stream_rotation_deadline(spec, config=config)
+                stream_iterator = websocket.__aiter__()
+                while not stop_event.is_set():
+                    try:
+                        message = await _next_stream_message_or_rotate(
+                            stream_iterator,
+                            rotation_deadline=rotation_deadline,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except _StreamRotationDue:
+                        _print_event(
+                            "stream_rotation_due",
+                            url=spec.url.split("?streams=", 1)[0],
+                            symbols=len(spec.symbols),
+                        )
+                        break
                     if stop_event.is_set():
                         return
                     if not _should_parse_stream_message(message, service):

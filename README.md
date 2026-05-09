@@ -429,6 +429,15 @@ Any Binance USD-M kline interval is accepted, including `1m`, `3m`, `5m`,
 `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `3d`, `1w`, and
 `1M`.
 
+WebSocket streams are chunked by `--max-streams`; the default is `200`, so the
+current full USDT perpetual universe runs in a few combined-stream connections
+instead of one large socket or dozens of tiny sockets. Each connection is
+proactively rotated before Binance's 24-hour hard disconnect: by default the
+daemon reconnects after 23 hours with up to 30 minutes of deterministic jitter
+per stream chunk. A `stream_rotation_due` log line is therefore expected daily;
+the reconnect path then performs normal `1m` gap recovery before resuming live
+market data.
+
 On startup and before every WebSocket reconnect, the daemon reads the persisted
 `1m` cursor for each symbol, fetches any missing closed `1m` bars through REST,
 stores them locally, and replays them through the local aggregator. On the very

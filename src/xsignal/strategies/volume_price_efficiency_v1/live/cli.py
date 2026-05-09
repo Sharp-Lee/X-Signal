@@ -92,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     stream_daemon.add_argument("--interval", action="append", default=[])
     stream_daemon.add_argument("--max-symbols", type=int)
     stream_daemon.add_argument("--max-streams", type=int)
+    stream_daemon.add_argument("--stream-max-lifetime-seconds", type=float)
+    stream_daemon.add_argument("--stream-rotation-jitter-seconds", type=float)
     stream_daemon.add_argument("--lookback-bars", type=int, default=120)
     stream_daemon.add_argument("--seed-sleep-ms", type=int, default=20)
     stream_daemon.add_argument("--recovery-sleep-ms", type=int, default=500)
@@ -448,6 +450,8 @@ def run_stream_daemon_command(
     reconcile_interval_seconds: float = 300.0,
     stop_after_events: int | None = None,
     max_streams: int | None = None,
+    stream_max_lifetime_seconds: float | None = None,
+    stream_rotation_jitter_seconds: float | None = None,
     credentials=None,
     daemon_runner=run_stream_daemon,
 ) -> int:
@@ -473,6 +477,16 @@ def run_stream_daemon_command(
         lookback_bars=lookback_bars,
         max_symbols=max_symbols,
         **({"max_streams": max_streams} if max_streams is not None else {}),
+        **(
+            {"stream_max_lifetime_seconds": stream_max_lifetime_seconds}
+            if stream_max_lifetime_seconds is not None
+            else {}
+        ),
+        **(
+            {"stream_rotation_jitter_seconds": stream_rotation_jitter_seconds}
+            if stream_rotation_jitter_seconds is not None
+            else {}
+        ),
         seed_sleep_ms=seed_sleep_ms,
         recovery_sleep_ms=recovery_sleep_ms,
         closed_poll_sleep_ms=closed_poll_sleep_ms,
@@ -541,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
             reconcile_interval_seconds=args.reconcile_interval_seconds,
             stop_after_events=args.stop_after_events,
             max_streams=args.max_streams,
+            stream_max_lifetime_seconds=args.stream_max_lifetime_seconds,
+            stream_rotation_jitter_seconds=args.stream_rotation_jitter_seconds,
         )
     if args.command == "live-smoke":
         return run_live_smoke_command(symbol=args.symbol, env_file=args.env_file)

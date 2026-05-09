@@ -203,6 +203,10 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "10",
             "--max-streams",
             "200",
+            "--stream-max-lifetime-seconds",
+            "82800",
+            "--stream-rotation-jitter-seconds",
+            "1800",
             "--recovery-sleep-ms",
             "150",
             "--closed-poll-sleep-ms",
@@ -223,6 +227,8 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.interval == ["1h", "4h"]
     assert args.max_symbols == 10
     assert args.max_streams == 200
+    assert args.stream_max_lifetime_seconds == 82800
+    assert args.stream_rotation_jitter_seconds == 1800
     assert args.recovery_sleep_ms == 150
     assert args.closed_poll_sleep_ms == 30
     assert args.closed_poll_grace_seconds == 3.5
@@ -463,6 +469,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
         acknowledge_live=False,
         live_enabled=False,
         max_streams=200,
+        stream_max_lifetime_seconds=82800,
+        stream_rotation_jitter_seconds=1800,
         closed_poll_sleep_ms=30,
         closed_poll_grace_seconds=3.5,
         closed_poll_fetch_limit=7,
@@ -475,6 +483,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
     assert calls[0]["config"].db_path == tmp_path / "stream.sqlite"
     assert calls[0]["config"].intervals == ("1h", "4h")
     assert calls[0]["config"].max_streams == 200
+    assert calls[0]["config"].stream_max_lifetime_seconds == 82800
+    assert calls[0]["config"].stream_rotation_jitter_seconds == 1800
     assert calls[0]["config"].closed_poll_sleep_ms == 30
     assert calls[0]["config"].closed_poll_grace_seconds == 3.5
     assert calls[0]["config"].closed_poll_fetch_limit == 7
