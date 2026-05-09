@@ -257,6 +257,7 @@ def test_broker_queries_position_risk_and_open_orders():
     broker = BinanceUsdFuturesTestnetBroker(rest_client)
 
     broker.get_position_risk(symbol="BTCUSDT")
+    broker.get_order(symbol="BTCUSDT", client_order_id="XV1TEBTC123")
     broker.get_open_order(symbol="BTCUSDT", client_order_id="XV1TSBTC123")
     broker.get_open_orders(symbol="BTCUSDT")
 
@@ -266,6 +267,12 @@ def test_broker_queries_position_risk_and_open_orders():
             "/fapi/v3/positionRisk",
             True,
             {"symbol": "BTCUSDT"},
+        ),
+        (
+            "GET",
+            "/fapi/v1/order",
+            True,
+            {"symbol": "BTCUSDT", "origClientOrderId": "XV1TEBTC123"},
         ),
         (
             "GET",

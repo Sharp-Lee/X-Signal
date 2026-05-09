@@ -26,6 +26,10 @@ class TestnetLifecycleResult:
     final_position_amount: float
 
 
+class UnknownStopSubmitStatus(RuntimeError):
+    pass
+
+
 def run_testnet_lifecycle(
     *,
     broker,
@@ -79,18 +83,24 @@ def run_testnet_lifecycle(
     try:
         _set_isolated_margin(broker, symbol)
         broker.change_leverage(symbol, 1)
-        broker.market_buy(
+        entry_submit_error = _submit_market_buy_with_reconcile(
+            broker=broker,
             symbol=symbol,
             quantity=normalized_quantity,
             client_order_id=entry_client_order_id,
         )
 
-        opened_position = _wait_for_long_position(
-            broker=broker,
-            symbol=symbol,
-            attempts=poll_attempts,
-            sleep_seconds=poll_sleep_seconds,
-        )
+        try:
+            opened_position = _wait_for_long_position(
+                broker=broker,
+                symbol=symbol,
+                attempts=poll_attempts,
+                sleep_seconds=poll_sleep_seconds,
+            )
+        except RuntimeError as exc:
+            if entry_submit_error is not None:
+                raise RuntimeError("entry submit status is unknown and no long position is visible") from exc
+            raise
         opened_position_amount = _position_amount(opened_position)
         reference_price = _position_reference_price(opened_position)
         stop_price = reference_price * (1 - stop_offset_pct)
@@ -104,12 +114,16 @@ def run_testnet_lifecycle(
         if stop_price <= 0:
             raise RuntimeError("computed stop price is not positive")
 
-        broker.place_stop_market_close(
-            symbol=symbol,
-            stop_price=stop_price_for_order,
-            client_order_id=stop_client_order_id,
-        )
-        stop_placed = True
+        try:
+            stop_placed = _submit_stop_with_reconcile(
+                broker=broker,
+                symbol=symbol,
+                stop_price=stop_price_for_order,
+                client_order_id=stop_client_order_id,
+            )
+        except UnknownStopSubmitStatus:
+            stop_placed = True
+            raise
 
         protected_position = _wait_for_long_position(
             broker=broker,
@@ -129,7 +143,8 @@ def run_testnet_lifecycle(
 
         broker.cancel_order(symbol=symbol, client_order_id=stop_client_order_id)
         stop_placed = False
-        broker.market_sell_reduce_only(
+        _submit_close_with_reconcile(
+            broker=broker,
             symbol=symbol,
             quantity=protected_position_amount,
             client_order_id=close_client_order_id,
@@ -173,6 +188,107 @@ def _set_isolated_margin(broker, symbol: str) -> None:
         if exc.code == -4046:
             return
         raise
+
+
+def _submit_market_buy_with_reconcile(
+    *,
+    broker,
+    symbol: str,
+    quantity,
+    client_order_id: str,
+) -> Exception | None:
+    try:
+        broker.market_buy(
+            symbol=symbol,
+            quantity=quantity,
+            client_order_id=client_order_id,
+        )
+        return None
+    except Exception as exc:
+        if not _is_unknown_exchange_error(exc):
+            raise
+        _query_regular_order_after_unknown_submit(
+            broker=broker,
+            symbol=symbol,
+            client_order_id=client_order_id,
+        )
+        return exc
+
+
+def _submit_stop_with_reconcile(
+    *,
+    broker,
+    symbol: str,
+    stop_price,
+    client_order_id: str,
+) -> bool:
+    try:
+        broker.place_stop_market_close(
+            symbol=symbol,
+            stop_price=stop_price,
+            client_order_id=client_order_id,
+        )
+        return True
+    except Exception as exc:
+        if not _is_unknown_exchange_error(exc):
+            raise
+        try:
+            open_stop = broker.get_open_order(
+                symbol=symbol,
+                client_order_id=client_order_id,
+            )
+        except Exception as query_exc:
+            raise UnknownStopSubmitStatus("protective stop submit status is unknown") from query_exc
+        if not _is_open_order(open_stop):
+            raise RuntimeError("protective stop submit did not leave an open stop")
+        return True
+
+
+def _submit_close_with_reconcile(
+    *,
+    broker,
+    symbol: str,
+    quantity: float,
+    client_order_id: str,
+) -> Exception | None:
+    try:
+        broker.market_sell_reduce_only(
+            symbol=symbol,
+            quantity=quantity,
+            client_order_id=client_order_id,
+        )
+        return None
+    except Exception as exc:
+        if not _is_unknown_exchange_error(exc):
+            raise
+        _query_regular_order_after_unknown_submit(
+            broker=broker,
+            symbol=symbol,
+            client_order_id=client_order_id,
+        )
+        return exc
+
+
+def _query_regular_order_after_unknown_submit(
+    *,
+    broker,
+    symbol: str,
+    client_order_id: str,
+) -> dict | None:
+    try:
+        order = broker.get_order(symbol=symbol, client_order_id=client_order_id)
+    except AttributeError:
+        return None
+    except Exception:
+        return None
+    status = order.get("status")
+    if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+        raise RuntimeError(f"order {client_order_id} resolved to terminal status {status}")
+    return order
+
+
+def _is_unknown_exchange_error(exc: Exception) -> bool:
+    return not isinstance(exc, BinanceApiError) or exc.status >= 500
 
 
 def _cleanup_testnet_lifecycle(
