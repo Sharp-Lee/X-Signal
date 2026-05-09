@@ -60,6 +60,7 @@ class StreamDaemonConfig:
     reconnect_backoff_seconds: float = 5.0
     reconcile_interval_seconds: float = 300.0
     seed_sleep_ms: int = 20
+    recovery_sleep_ms: int = 100
     stop_after_events: int | None = None
 
     def __post_init__(self) -> None:
@@ -69,6 +70,8 @@ class StreamDaemonConfig:
             raise ValueError("lookback_bars must be positive")
         if self.max_symbols is not None and self.max_symbols <= 0:
             raise ValueError("max_symbols must be positive")
+        if self.recovery_sleep_ms < 0:
+            raise ValueError("recovery_sleep_ms must be non-negative")
         for interval in self.intervals:
             validate_interval(interval)
 
@@ -280,7 +283,7 @@ async def _consume_stream_url(
                 service=service,
                 symbols=list(spec.symbols),
                 intervals=config.intervals,
-                seed_sleep_ms=config.seed_sleep_ms,
+                recovery_sleep_ms=config.recovery_sleep_ms,
             )
             async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
                 _print_event("stream_connected", url=spec.url.split("?streams=", 1)[0])
@@ -317,7 +320,7 @@ def _recover_symbols_1m_gap(
     service: RealtimeStrategyService,
     symbols: list[str],
     intervals: tuple[str, ...],
-    seed_sleep_ms: int,
+    recovery_sleep_ms: int,
 ) -> None:
     server_time_ms = int(rest_client.request("GET", "/fapi/v1/time")["serverTime"])
     end_time = latest_closed_1m_open_time(server_time_ms)
@@ -348,8 +351,8 @@ def _recover_symbols_1m_gap(
         )
         recovered_source += result.source_bars
         recovered_aggregates += result.aggregated_bars
-        if seed_sleep_ms > 0:
-            time.sleep(seed_sleep_ms / 1000)
+        if recovery_sleep_ms > 0:
+            time.sleep(recovery_sleep_ms / 1000)
     if recovered_source or recovered_aggregates:
         _print_event(
             "market_gap_recovered",

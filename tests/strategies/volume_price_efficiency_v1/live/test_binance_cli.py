@@ -203,6 +203,8 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "10",
             "--max-streams",
             "200",
+            "--recovery-sleep-ms",
+            "150",
             "--stop-after-events",
             "3",
         ]
@@ -215,6 +217,7 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.interval == ["1h", "4h"]
     assert args.max_symbols == 10
     assert args.max_streams == 200
+    assert args.recovery_sleep_ms == 150
     assert args.stop_after_events == 3
 
 

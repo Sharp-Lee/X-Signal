@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeEventResult
+from xsignal.strategies.volume_price_efficiency_v1.live import stream_daemon as stream_daemon_module
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     _process_closed_1m_event,
+    _recover_symbols_1m_gap,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
     seed_rolling_buffers,
@@ -50,12 +52,39 @@ class FakeStore:
         self.cursors.append((symbol, interval, open_time))
 
 
+class FakeRecoveryRestClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def request(self, method, path, *, signed=False, params=None):
+        self.calls.append((method, path, signed, params or {}))
+        if path == "/fapi/v1/time":
+            return {"serverTime": 1778330000000}
+        return []
+
+
+class FakeRecoveryStore:
+    def get_market_cursor(self, *, symbol, interval):
+        return None
+
+    def upsert_market_bar(self, row, *, commit=True) -> None:
+        raise AssertionError("no closed 1m rows should be replayed in this test")
+
+    def advance_market_cursor(self, *, symbol, interval, open_time, commit=True) -> None:
+        raise AssertionError("no cursor should advance in this test")
+
+
 class FakeAggregator:
     def __init__(self, aggregate: KlineStreamEvent) -> None:
         self.aggregate = aggregate
 
     def apply_1m_event(self, event):
         return [self.aggregate]
+
+
+class EmptyAggregator:
+    def apply_1m_event(self, event):
+        return []
 
 
 class FakeService:
@@ -86,6 +115,8 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     assert config.intervals == ("1h", "4h", "1d")
     assert config.lookback_bars == 120
     assert config.max_streams == 200
+    assert config.seed_sleep_ms == 20
+    assert config.recovery_sleep_ms == 100
 
 
 def test_build_daemon_stream_urls_subscribes_only_to_1m_source_streams():
@@ -135,6 +166,23 @@ def test_seed_rolling_buffers_fetches_each_interval_and_symbol():
     )
     assert len(client.calls) == 4
     assert {call[3]["interval"] for call in client.calls} == {"1h", "4h"}
+
+
+def test_recover_symbols_1m_gap_uses_slower_recovery_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(stream_daemon_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    _recover_symbols_1m_gap(
+        store=FakeRecoveryStore(),
+        rest_client=FakeRecoveryRestClient(),
+        aggregator=EmptyAggregator(),
+        service=None,
+        symbols=["BTCUSDT", "ETHUSDT"],
+        intervals=("1h",),
+        recovery_sleep_ms=100,
+    )
+
+    assert sleeps == [0.1, 0.1]
 
 
 def test_process_closed_1m_event_respects_entry_gate_for_aggregates():
