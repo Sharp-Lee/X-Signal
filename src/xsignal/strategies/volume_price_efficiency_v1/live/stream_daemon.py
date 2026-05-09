@@ -395,7 +395,7 @@ async def _full_universe_stream_manager(
     )
     await asyncio.gather(
         *[
-            _consume_stream_url(
+            _consume_full_universe_stream_url(
                 spec=spec,
                 store=store,
                 rest_client=rest_client,
@@ -560,6 +560,35 @@ async def _consume_active_position_stream_url(
             entry_gate.mark_stream_error(str(exc))
             _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
+
+
+async def _consume_full_universe_stream_url(
+    *,
+    spec: StreamUrlSpec,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+    recovery_lock: asyncio.Lock,
+    recover_before_connect: bool = True,
+) -> None:
+    await _consume_stream_url(
+        spec=spec,
+        store=store,
+        rest_client=rest_client,
+        aggregator=aggregator,
+        service=service,
+        entry_gate=entry_gate,
+        stop_event=stop_event,
+        counter=counter,
+        config=config,
+        recovery_lock=recovery_lock,
+        recover_before_connect=recover_before_connect,
+    )
 
 
 async def _consume_stream_url(

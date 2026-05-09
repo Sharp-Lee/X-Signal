@@ -708,6 +708,66 @@ def test_consume_stream_url_can_skip_initial_recovery_after_startup(monkeypatch)
     assert events == ["connect"]
 
 
+def test_full_universe_stream_recovers_gaps_before_connect(monkeypatch):
+    events = []
+
+    async def fake_recover(**kwargs):
+        events.append(("recover", tuple(kwargs["symbols"])))
+
+    class OneMessageSocket:
+        def __init__(self):
+            self.sent = False
+
+        async def __aenter__(self):
+            events.append(("connect",))
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return (
+                '{"stream":"btcusdt@kline_1m","data":{"e":"kline","E":1778318492123,'
+                '"s":"BTCUSDT","k":{"t":1778313600000,"T":1778313659999,"s":"BTCUSDT",'
+                '"i":"1m","o":"100","c":"101","h":"102","l":"99","q":"10","x":false}}}'
+            )
+
+    monkeypatch.setattr(stream_daemon_module, "_recover_symbols_1m_gap_async", fake_recover)
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        types.SimpleNamespace(connect=lambda *args, **kwargs: OneMessageSocket()),
+    )
+
+    async def run():
+        stop_event = asyncio.Event()
+        counter = stream_daemon_module._EventCounter(limit=1)
+        await stream_daemon_module._consume_full_universe_stream_url(
+            spec=StreamUrlSpec(url="wss://example", symbols=("BTCUSDT",)),
+            store=object(),
+            rest_client=object(),
+            aggregator=object(),
+            service=ActiveSymbolService(set()),
+            entry_gate=ClosedEntryGate(),
+            stop_event=stop_event,
+            counter=counter,
+            config=StreamDaemonConfig(mode="testnet", db_path="live.sqlite"),
+            recovery_lock=asyncio.Lock(),
+            recover_before_connect=True,
+        )
+
+    asyncio.run(run())
+
+    assert events[0] == ("recover", ("BTCUSDT",))
+    assert events[1] == ("connect",)
+
+
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
     service = ActiveSymbolService({"BTCUSDT"})
 
