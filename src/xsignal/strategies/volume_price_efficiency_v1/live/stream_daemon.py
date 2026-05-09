@@ -26,6 +26,10 @@ from xsignal.strategies.volume_price_efficiency_v1.live.market_data import (
     fetch_closed_klines,
     fetch_closed_klines_range,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.market_pipeline import (
+    ClosedBarBatchWorker,
+    MarketEventRouter,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeStrategyService
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
 from xsignal.strategies.volume_price_efficiency_v1.live.recovery import (
@@ -576,19 +580,60 @@ async def _consume_full_universe_stream_url(
     recovery_lock: asyncio.Lock,
     recover_before_connect: bool = True,
 ) -> None:
-    await _consume_stream_url(
-        spec=spec,
-        store=store,
-        rest_client=rest_client,
-        aggregator=aggregator,
-        service=service,
-        entry_gate=entry_gate,
-        stop_event=stop_event,
-        counter=counter,
-        config=config,
-        recovery_lock=recovery_lock,
-        recover_before_connect=recover_before_connect,
-    )
+    import websockets
+
+    router = MarketEventRouter(service=service)
+    closed_worker = ClosedBarBatchWorker(store=store, aggregator=aggregator, service=service)
+    needs_recovery = recover_before_connect
+    while not stop_event.is_set():
+        try:
+            if needs_recovery:
+                await _recover_symbols_1m_gap_async(
+                    recovery_lock=recovery_lock,
+                    store=store,
+                    rest_client=rest_client,
+                    aggregator=aggregator,
+                    service=service,
+                    symbols=list(spec.symbols),
+                    intervals=config.intervals,
+                    recovery_sleep_ms=config.recovery_sleep_ms,
+                    fetch_limit=config.closed_poll_fetch_limit,
+                )
+            needs_recovery = True
+            async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
+                _print_event(
+                    "stream_connected",
+                    url=spec.url.split("?streams=", 1)[0],
+                    symbols=len(spec.symbols),
+                    purpose="full_universe_market_data",
+                )
+                async for message in websocket:
+                    if stop_event.is_set():
+                        return
+                    payload = json.loads(message)
+                    event = parse_kline_stream_event(payload)
+                    router.route(event)
+                    if event.is_closed:
+                        closed_worker.process_many(
+                            _drain_closed_queue(router),
+                            allow_entry=entry_gate.allow_entries,
+                        )
+                    if counter.incremented_past_limit():
+                        stop_event.set()
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            entry_gate.mark_stream_error(str(exc))
+            _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
+            await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
+
+
+def _drain_closed_queue(router: MarketEventRouter) -> list:
+    events = []
+    while not router.closed_queue.empty():
+        events.append(router.closed_queue.get())
+    return events
 
 
 async def _consume_stream_url(

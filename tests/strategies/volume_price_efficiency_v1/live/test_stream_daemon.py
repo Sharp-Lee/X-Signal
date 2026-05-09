@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+import json
 import sys
 import threading
 import time
@@ -156,6 +157,7 @@ class FakeService:
     def __init__(self) -> None:
         self.price_calls = []
         self.closed_calls = []
+        self.closed_batches = []
 
     def process_price_event(self, event, *, allow_pyramid_add, allow_stop_replace=True):
         self.price_calls.append((event, allow_pyramid_add, allow_stop_replace))
@@ -170,6 +172,17 @@ class FakeService:
         allow_stop_replace=True,
     ):
         self.closed_calls.append((event, allow_entry, allow_pyramid_add, allow_stop_replace))
+        return RealtimeEventResult(closed_signal_checked=True)
+
+    def process_closed_bar_batch(
+        self,
+        events,
+        *,
+        allow_entry,
+        allow_pyramid_add,
+        allow_stop_replace=True,
+    ):
+        self.closed_batches.append((tuple(events), allow_entry, allow_pyramid_add, allow_stop_replace))
         return RealtimeEventResult(closed_signal_checked=True)
 
 
@@ -766,6 +779,69 @@ def test_full_universe_stream_recovers_gaps_before_connect(monkeypatch):
 
     assert events[0] == ("recover", ("BTCUSDT",))
     assert events[1] == ("connect",)
+
+
+def test_full_universe_stream_routes_closed_events_through_batch_worker(monkeypatch):
+    class OneClosedMessageSocket:
+        def __init__(self):
+            self.sent = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return json.dumps(_stream_payload(symbol="BTCUSDT", closed=True))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        types.SimpleNamespace(connect=lambda *args, **kwargs: OneClosedMessageSocket()),
+    )
+    event = KlineStreamEvent(
+        symbol="BTCUSDT",
+        interval="1h",
+        event_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        open_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        close_time=datetime(2026, 5, 9, 8, 59, 59, tzinfo=timezone.utc),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.5,
+        quote_volume=10.0,
+        is_closed=True,
+    )
+    store = FakeStore()
+    service = FakeService()
+
+    async def run():
+        await stream_daemon_module._consume_full_universe_stream_url(
+            spec=StreamUrlSpec(url="wss://example", symbols=("BTCUSDT",)),
+            store=store,
+            rest_client=object(),
+            aggregator=FakeAggregator(event),
+            service=service,
+            entry_gate=ClosedEntryGate(),
+            stop_event=asyncio.Event(),
+            counter=stream_daemon_module._EventCounter(limit=1),
+            config=StreamDaemonConfig(mode="testnet", db_path="live.sqlite"),
+            recovery_lock=asyncio.Lock(),
+            recover_before_connect=False,
+        )
+
+    asyncio.run(run())
+
+    assert store.commits == 1
+    assert service.closed_calls == []
+    assert service.closed_batches == [((event,), False, True, True)]
 
 
 def test_should_parse_stream_payload_skips_inactive_unclosed_updates():
