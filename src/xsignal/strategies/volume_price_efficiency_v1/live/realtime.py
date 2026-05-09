@@ -397,6 +397,12 @@ class RealtimeStrategyService:
     def has_active_symbol_position(self, symbol: str) -> bool:
         return self._has_active_symbol_position(symbol)
 
+    def active_symbols(self) -> tuple[str, ...]:
+        return tuple(sorted(self._active_symbols))
+
+    def refresh_active_symbols(self) -> None:
+        self._refresh_active_symbols()
+
     def _refresh_active_symbols(self) -> None:
         self._active_symbols = {record.symbol for record in list_active_live_positions(self.store)}
 

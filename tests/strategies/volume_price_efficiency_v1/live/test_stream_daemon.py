@@ -12,6 +12,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
     StreamUrlSpec,
     _consume_stream_url,
+    _poll_closed_1m_once_async,
     _process_closed_1m_event,
     _recover_symbols_1m_gap,
     _recover_symbols_1m_gap_async,
@@ -78,6 +79,9 @@ class FakeStore:
 
     def advance_market_cursor(self, *, symbol, interval, open_time, commit=True) -> None:
         self.cursors.append((symbol, interval, open_time, commit))
+
+    def get_market_cursor(self, *, symbol, interval):
+        return datetime(2026, 5, 9, 8, tzinfo=timezone.utc)
 
 
 class FakeRecoveryRestClient:
@@ -152,12 +156,19 @@ class FakeService:
         self.price_calls = []
         self.closed_calls = []
 
-    def process_price_event(self, event, *, allow_pyramid_add):
-        self.price_calls.append((event, allow_pyramid_add))
+    def process_price_event(self, event, *, allow_pyramid_add, allow_stop_replace=True):
+        self.price_calls.append((event, allow_pyramid_add, allow_stop_replace))
         return RealtimeEventResult(closed_signal_checked=False)
 
-    def process_closed_bar(self, event, *, allow_entry, allow_pyramid_add):
-        self.closed_calls.append((event, allow_entry, allow_pyramid_add))
+    def process_closed_bar(
+        self,
+        event,
+        *,
+        allow_entry,
+        allow_pyramid_add,
+        allow_stop_replace=True,
+    ):
+        self.closed_calls.append((event, allow_entry, allow_pyramid_add, allow_stop_replace))
         return RealtimeEventResult(closed_signal_checked=True)
 
 
@@ -424,6 +435,69 @@ def test_async_recovery_serializes_fetches_but_keeps_event_loop_responsive():
     assert events.index("start-ETHUSDT") > events.index("end-BTCUSDT")
 
 
+def test_closed_bar_poll_allows_fresh_entries_and_paces_fetches():
+    sleeps = []
+
+    def fetch_range(rest_client, **kwargs):
+        return [
+            {
+                "symbol": kwargs["symbol"],
+                "interval": "1m",
+                "open_time": datetime(2026, 5, 9, 8, 1, tzinfo=timezone.utc),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "quote_volume": 10.0,
+                "is_complete": True,
+            }
+        ]
+
+    class TimeClient:
+        def request(self, method, path, *, signed=False, params=None):
+            return {"serverTime": 1778330000000}
+
+    aggregate = KlineStreamEvent(
+        symbol="BTCUSDT",
+        interval="1h",
+        event_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        open_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        close_time=datetime(2026, 5, 9, 8, 59, 59, tzinfo=timezone.utc),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.5,
+        quote_volume=10.0,
+        is_closed=True,
+    )
+    service = FakeService()
+
+    async def run() -> None:
+        async def record_sleep(seconds):
+            sleeps.append(seconds)
+
+        await _poll_closed_1m_once_async(
+            recovery_lock=asyncio.Lock(),
+            store=FakeStore(),
+            rest_client=TimeClient(),
+            aggregator=FakeAggregator(aggregate),
+            service=service,
+            entry_gate=type("OpenGate", (), {"allow_entries": True})(),
+            symbols=["BTCUSDT"],
+            intervals=("1h",),
+            poll_sleep_ms=25,
+            sleep_func=record_sleep,
+            fetch_range=fetch_range,
+        )
+
+    asyncio.run(run())
+
+    assert sleeps == [0.025]
+    assert len(service.price_calls) == 1
+    assert service.price_calls[0][1:] == (True, False)
+    assert service.closed_calls == [(aggregate, True, True, False)]
+
+
 def test_consume_stream_url_can_skip_initial_recovery_after_startup(monkeypatch):
     events = []
 
@@ -557,5 +631,5 @@ def test_process_closed_1m_event_respects_entry_gate_for_aggregates():
     assert [commit for bar, commit in store.bars] == [False, False]
     assert store.cursors == [("BTCUSDT", "1m", event.open_time, False)]
     assert store.commits == 1
-    assert service.price_calls == [(event, True)]
-    assert service.closed_calls == [(aggregate, False, True)]
+    assert service.price_calls == [(event, True, True)]
+    assert service.closed_calls == [(aggregate, False, True, True)]

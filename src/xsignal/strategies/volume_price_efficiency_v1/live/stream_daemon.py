@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
@@ -65,6 +65,8 @@ class StreamDaemonConfig:
     reconcile_interval_seconds: float = 300.0
     seed_sleep_ms: int = 20
     recovery_sleep_ms: int = 500
+    closed_poll_sleep_ms: int = 25
+    closed_poll_grace_seconds: float = 2.0
     stop_after_events: int | None = None
 
     def __post_init__(self) -> None:
@@ -78,6 +80,10 @@ class StreamDaemonConfig:
             raise ValueError("rate_limit_backoff_seconds must be non-negative")
         if self.recovery_sleep_ms < 0:
             raise ValueError("recovery_sleep_ms must be non-negative")
+        if self.closed_poll_sleep_ms < 0:
+            raise ValueError("closed_poll_sleep_ms must be non-negative")
+        if self.closed_poll_grace_seconds < 0:
+            raise ValueError("closed_poll_grace_seconds must be non-negative")
         for interval in self.intervals:
             validate_interval(interval)
 
@@ -241,11 +247,6 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         now_provider=lambda: datetime.now(timezone.utc),
     )
     aggregator = MultiIntervalAggregator(intervals=config.intervals)
-    specs = build_daemon_stream_specs(
-        mode=config.mode,
-        symbols=symbols,
-        max_streams=config.max_streams,
-    )
     stop_event = asyncio.Event()
     recovery_lock = asyncio.Lock()
     counter = _EventCounter(limit=config.stop_after_events)
@@ -263,21 +264,29 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
     _print_event("startup_recovery_finished", mode=config.mode, symbols=len(symbols))
     tasks = [
         asyncio.create_task(
-            _consume_stream_url(
-                spec,
-                store,
-                broker.rest_client,
-                aggregator,
-                service,
-                entry_gate,
-                stop_event,
-                counter,
-                config,
-                recovery_lock,
-                recover_before_connect=False,
+            _poll_closed_1m_loop(
+                store=store,
+                rest_client=broker.rest_client,
+                aggregator=aggregator,
+                service=service,
+                entry_gate=entry_gate,
+                symbols=symbols,
+                intervals=config.intervals,
+                stop_event=stop_event,
+                counter=counter,
+                config=config,
+                recovery_lock=recovery_lock,
             )
-        )
-        for spec in specs
+        ),
+        asyncio.create_task(
+            _active_position_stream_manager(
+                service=service,
+                entry_gate=entry_gate,
+                stop_event=stop_event,
+                counter=counter,
+                config=config,
+            )
+        ),
     ]
     if config.reconcile_interval_seconds > 0:
         tasks.append(
@@ -289,12 +298,161 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
                     environment=config.mode,
                     interval_seconds=config.reconcile_interval_seconds,
                     entry_gate=entry_gate,
+                    service=service,
                     stop_event=stop_event,
                 )
             )
         )
     await asyncio.gather(*tasks)
     return 0
+
+
+async def _poll_closed_1m_loop(
+    *,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    symbols: list[str],
+    intervals: tuple[str, ...],
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+    recovery_lock: asyncio.Lock,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await _poll_closed_1m_once_async(
+                recovery_lock=recovery_lock,
+                store=store,
+                rest_client=rest_client,
+                aggregator=aggregator,
+                service=service,
+                entry_gate=entry_gate,
+                symbols=symbols,
+                intervals=intervals,
+                poll_sleep_ms=config.closed_poll_sleep_ms,
+            )
+            _print_event("closed_bar_poll_finished", symbols=len(symbols))
+            if counter.incremented_past_limit():
+                stop_event.set()
+                return
+            await asyncio.sleep(
+                _seconds_until_next_closed_1m_poll(
+                    datetime.now(timezone.utc),
+                    grace_seconds=config.closed_poll_grace_seconds,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            entry_gate.mark_stream_error(str(exc))
+            _print_event("closed_bar_poll_error", error=str(exc), entry_gate=entry_gate.snapshot())
+            await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
+
+
+async def _active_position_stream_manager(
+    *,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+) -> None:
+    current_symbols: tuple[str, ...] = ()
+    stream_stop: asyncio.Event | None = None
+    tasks: list[asyncio.Task] = []
+    try:
+        while not stop_event.is_set():
+            service.refresh_active_symbols()
+            active_symbols = service.active_symbols()
+            if active_symbols != current_symbols:
+                if stream_stop is not None:
+                    stream_stop.set()
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = []
+                stream_stop = None
+                current_symbols = active_symbols
+                if active_symbols:
+                    stream_stop = asyncio.Event()
+                    specs = build_daemon_stream_specs(
+                        mode=config.mode,
+                        symbols=list(active_symbols),
+                        max_streams=config.max_streams,
+                    )
+                    tasks = [
+                        asyncio.create_task(
+                            _consume_active_position_stream_url(
+                                spec=spec,
+                                service=service,
+                                entry_gate=entry_gate,
+                                stop_event=stream_stop,
+                                counter=counter,
+                                config=config,
+                            )
+                        )
+                        for spec in specs
+                    ]
+                    _print_event(
+                        "active_streams_updated",
+                        symbols=len(active_symbols),
+                        streams=len(specs),
+                    )
+                else:
+                    _print_event("active_streams_updated", symbols=0, streams=0)
+            await asyncio.sleep(1.0)
+    finally:
+        if stream_stop is not None:
+            stream_stop.set()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _consume_active_position_stream_url(
+    *,
+    spec: StreamUrlSpec,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    stop_event: asyncio.Event,
+    counter: "_EventCounter",
+    config: StreamDaemonConfig,
+) -> None:
+    import websockets
+
+    while not stop_event.is_set():
+        try:
+            async with websockets.connect(spec.url, ping_interval=180, ping_timeout=600) as websocket:
+                _print_event(
+                    "stream_connected",
+                    url=spec.url.split("?streams=", 1)[0],
+                    symbols=len(spec.symbols),
+                    purpose="active_positions",
+                )
+                async for message in websocket:
+                    if stop_event.is_set():
+                        return
+                    payload = json.loads(message)
+                    if not _should_parse_stream_payload(payload, service):
+                        if counter.incremented_past_limit():
+                            stop_event.set()
+                            return
+                        continue
+                    event = parse_kline_stream_event(payload)
+                    result = service.process_price_event(event, allow_pyramid_add=True)
+                    _print_strategy_action(event=event, result=result)
+                    if counter.incremented_past_limit():
+                        stop_event.set()
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            entry_gate.mark_stream_error(str(exc))
+            _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
+            await asyncio.sleep(_stream_error_backoff_seconds(exc, config))
 
 
 async def _consume_stream_url(
@@ -419,6 +577,12 @@ def _is_rate_limit_error(exc: BinanceApiError) -> bool:
     return exc.status == 429 or exc.code == -1003
 
 
+def _seconds_until_next_closed_1m_poll(now: datetime, *, grace_seconds: float) -> float:
+    minute_start = now.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    next_target = minute_start + timedelta(minutes=1, seconds=grace_seconds)
+    return max((next_target - now.astimezone(timezone.utc)).total_seconds(), 0.0)
+
+
 def _recover_symbols_1m_gap(
     *,
     store: LiveStore,
@@ -479,6 +643,9 @@ async def _recover_symbols_1m_gap_async(
     symbols: list[str],
     intervals: tuple[str, ...],
     recovery_sleep_ms: int,
+    allow_entries: bool = False,
+    allow_pyramid_add: bool = False,
+    sleep_func=asyncio.sleep,
     fetch_range=fetch_closed_klines_range,
 ) -> None:
     async with recovery_lock:
@@ -509,13 +676,13 @@ async def _recover_symbols_1m_gap_async(
                 aggregator=aggregator,
                 sink=service,
                 events=[event_from_market_bar(row) for row in rows],
-                allow_entries=False,
-                allow_pyramid_add=False,
+                allow_entries=allow_entries,
+                allow_pyramid_add=allow_pyramid_add,
             )
             recovered_source += result.source_bars
             recovered_aggregates += result.aggregated_bars
             if recovery_sleep_ms > 0:
-                await asyncio.sleep(recovery_sleep_ms / 1000)
+                await sleep_func(recovery_sleep_ms / 1000)
         if recovered_source or recovered_aggregates:
             _print_event(
                 "market_gap_recovered",
@@ -523,6 +690,36 @@ async def _recover_symbols_1m_gap_async(
                 source_bars=recovered_source,
                 aggregated_bars=recovered_aggregates,
             )
+
+
+async def _poll_closed_1m_once_async(
+    *,
+    recovery_lock: asyncio.Lock,
+    store: LiveStore,
+    rest_client: BinanceRestClient,
+    aggregator: MultiIntervalAggregator,
+    service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
+    symbols: list[str],
+    intervals: tuple[str, ...],
+    poll_sleep_ms: int,
+    sleep_func=asyncio.sleep,
+    fetch_range=fetch_closed_klines_range,
+) -> None:
+    await _recover_symbols_1m_gap_async(
+        recovery_lock=recovery_lock,
+        store=store,
+        rest_client=rest_client,
+        aggregator=aggregator,
+        service=service,
+        symbols=symbols,
+        intervals=intervals,
+        recovery_sleep_ms=poll_sleep_ms,
+        allow_entries=entry_gate.allow_entries,
+        allow_pyramid_add=True,
+        sleep_func=sleep_func,
+        fetch_range=fetch_range,
+    )
 
 
 def _process_closed_1m_event(
@@ -575,6 +772,7 @@ async def _periodic_reconcile(
     interval_seconds: float,
     entry_gate: EntryHealthGate,
     stop_event: asyncio.Event,
+    service: RealtimeStrategyService | None = None,
 ) -> None:
     while not stop_event.is_set():
         await asyncio.sleep(interval_seconds)
@@ -589,6 +787,8 @@ async def _periodic_reconcile(
             now=datetime.now(timezone.utc),
         )
         entry_gate.mark_reconcile(summary)
+        if service is not None:
+            service.refresh_active_symbols()
         _print_reconcile_event(summary=summary, entry_gate=entry_gate)
 
 

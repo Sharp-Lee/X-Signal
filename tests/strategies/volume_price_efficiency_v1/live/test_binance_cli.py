@@ -205,6 +205,10 @@ def test_cli_has_stream_daemon_command(tmp_path):
             "200",
             "--recovery-sleep-ms",
             "150",
+            "--closed-poll-sleep-ms",
+            "30",
+            "--closed-poll-grace-seconds",
+            "3.5",
             "--stop-after-events",
             "3",
         ]
@@ -218,6 +222,8 @@ def test_cli_has_stream_daemon_command(tmp_path):
     assert args.max_symbols == 10
     assert args.max_streams == 200
     assert args.recovery_sleep_ms == 150
+    assert args.closed_poll_sleep_ms == 30
+    assert args.closed_poll_grace_seconds == 3.5
     assert args.stop_after_events == 3
 
 
@@ -454,6 +460,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
         acknowledge_live=False,
         live_enabled=False,
         max_streams=200,
+        closed_poll_sleep_ms=30,
+        closed_poll_grace_seconds=3.5,
         credentials=object(),
         daemon_runner=fake_runner,
     )
@@ -463,6 +471,8 @@ def test_stream_daemon_uses_injected_runner(tmp_path):
     assert calls[0]["config"].db_path == tmp_path / "stream.sqlite"
     assert calls[0]["config"].intervals == ("1h", "4h")
     assert calls[0]["config"].max_streams == 200
+    assert calls[0]["config"].closed_poll_sleep_ms == 30
+    assert calls[0]["config"].closed_poll_grace_seconds == 3.5
     assert calls[0]["credentials"] is not None
 
 
