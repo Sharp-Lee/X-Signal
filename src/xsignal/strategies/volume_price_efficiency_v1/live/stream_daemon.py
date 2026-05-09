@@ -43,7 +43,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import (
 
 
 DEFAULT_REALTIME_INTERVALS = ("1h", "4h", "1d")
-DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 200
+DEFAULT_REALTIME_MAX_STREAMS_PER_CONNECTION = 100
 
 
 @dataclass(frozen=True)

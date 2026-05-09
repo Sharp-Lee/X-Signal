@@ -195,7 +195,7 @@ def test_stream_daemon_config_defaults_to_realtime_intervals():
     config = StreamDaemonConfig(mode="testnet", db_path="live.sqlite")
     assert config.intervals == ("1h", "4h", "1d")
     assert config.lookback_bars == 120
-    assert config.max_streams == 200
+    assert config.max_streams == 100
     assert config.seed_sleep_ms == 20
     assert config.recovery_sleep_ms == 500
     assert config.rate_limit_backoff_seconds == 60.0
