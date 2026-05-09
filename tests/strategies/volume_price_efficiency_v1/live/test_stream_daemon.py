@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 
+from xsignal.strategies.volume_price_efficiency_v1.live.realtime import RealtimeEventResult
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     StreamDaemonConfig,
+    _process_closed_1m_event,
     build_daemon_stream_urls,
     build_daemon_stream_specs,
     seed_rolling_buffers,
     ws_base_url_for_mode,
 )
+from xsignal.strategies.volume_price_efficiency_v1.live.ws_market import KlineStreamEvent
 
 
 def _kline(open_ms: int, close_ms: int, close: str = "105"):
@@ -33,6 +36,44 @@ class FakeSeedClient:
     def request(self, method, path, *, signed=False, params=None):
         self.calls.append((method, path, signed, params or {}))
         return [_kline(1778313600000, 1778327999999)]
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.bars = []
+        self.cursors = []
+
+    def upsert_market_bar(self, row) -> None:
+        self.bars.append(row)
+
+    def advance_market_cursor(self, *, symbol, interval, open_time) -> None:
+        self.cursors.append((symbol, interval, open_time))
+
+
+class FakeAggregator:
+    def __init__(self, aggregate: KlineStreamEvent) -> None:
+        self.aggregate = aggregate
+
+    def apply_1m_event(self, event):
+        return [self.aggregate]
+
+
+class FakeService:
+    def __init__(self) -> None:
+        self.price_calls = []
+        self.closed_calls = []
+
+    def process_price_event(self, event, *, allow_pyramid_add):
+        self.price_calls.append((event, allow_pyramid_add))
+        return RealtimeEventResult(closed_signal_checked=False)
+
+    def process_closed_bar(self, event, *, allow_entry, allow_pyramid_add):
+        self.closed_calls.append((event, allow_entry, allow_pyramid_add))
+        return RealtimeEventResult(closed_signal_checked=True)
+
+
+class ClosedEntryGate:
+    allow_entries = False
 
 
 def test_ws_base_url_for_mode_uses_testnet_and_live_hosts():
@@ -94,3 +135,47 @@ def test_seed_rolling_buffers_fetches_each_interval_and_symbol():
     )
     assert len(client.calls) == 4
     assert {call[3]["interval"] for call in client.calls} == {"1h", "4h"}
+
+
+def test_process_closed_1m_event_respects_entry_gate_for_aggregates():
+    event = KlineStreamEvent(
+        symbol="BTCUSDT",
+        interval="1m",
+        event_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        open_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        close_time=datetime(2026, 5, 9, 8, 0, 59, tzinfo=timezone.utc),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.5,
+        quote_volume=10.0,
+        is_closed=True,
+    )
+    aggregate = KlineStreamEvent(
+        symbol="BTCUSDT",
+        interval="1h",
+        event_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        open_time=datetime(2026, 5, 9, 8, tzinfo=timezone.utc),
+        close_time=datetime(2026, 5, 9, 8, 59, 59, tzinfo=timezone.utc),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.5,
+        quote_volume=10.0,
+        is_closed=True,
+    )
+    store = FakeStore()
+    service = FakeService()
+
+    _process_closed_1m_event(
+        store=store,
+        aggregator=FakeAggregator(aggregate),
+        service=service,
+        event=event,
+        entry_gate=ClosedEntryGate(),
+    )
+
+    assert [bar["interval"] for bar in store.bars] == ["1m", "1h"]
+    assert store.cursors == [("BTCUSDT", "1m", event.open_time)]
+    assert service.price_calls == [(event, True)]
+    assert service.closed_calls == [(aggregate, False, True)]

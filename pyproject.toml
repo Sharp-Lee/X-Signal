@@ -23,6 +23,7 @@ xsignal-export = "xsignal.data.canonical_export:main"
 xsignal-momentum-v1 = "xsignal.strategies.momentum_rotation_v1.cli:main"
 xsignal-vpe-v1 = "xsignal.strategies.volume_price_efficiency_v1.cli:main"
 xsignal-vpe-live = "xsignal.strategies.volume_price_efficiency_v1.live.cli:main"
+xsignal-vpe-status = "xsignal.strategies.volume_price_efficiency_v1.live.status_cli:main"
 
 [build-system]
 requires = ["setuptools>=69.0"]

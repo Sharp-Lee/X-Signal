@@ -22,6 +22,11 @@ from xsignal.strategies.volume_price_efficiency_v1.live.order_normalizer import 
 from xsignal.strategies.volume_price_efficiency_v1.live.reconcile import run_reconciliation_pass
 from xsignal.strategies.volume_price_efficiency_v1.live.runner import run_live_cycle
 from xsignal.strategies.volume_price_efficiency_v1.live.config import LiveTradingConfig
+from xsignal.strategies.volume_price_efficiency_v1.live.status import (
+    build_status_snapshot,
+    collect_system_snapshot,
+    render_status_text,
+)
 from xsignal.strategies.volume_price_efficiency_v1.live.stream_daemon import (
     DEFAULT_REALTIME_INTERVALS,
     StreamDaemonConfig,
@@ -48,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("status")
     status.add_argument("--db", type=Path, required=True)
+    status.add_argument("--json", action="store_true")
+    status.add_argument("--no-system", action="store_true")
 
     reconcile = subparsers.add_parser("reconcile")
     reconcile.add_argument("--db", type=Path, required=True)
@@ -284,6 +291,27 @@ def run_testnet_reconcile_command(
     return 1 if summary.error_count else 0
 
 
+def run_status_command(
+    *,
+    db: Path,
+    json_output: bool,
+    collect_system: bool = True,
+    system_snapshot: dict[str, object] | None = None,
+) -> int:
+    if system_snapshot is None:
+        system_snapshot = (
+            collect_system_snapshot()
+            if collect_system
+            else {"system_available": False, "sockets": [], "journal": {}}
+        )
+    snapshot = build_status_snapshot(db_path=db, system_snapshot=system_snapshot)
+    if json_output:
+        print(json.dumps(snapshot, indent=2, sort_keys=True))
+    else:
+        print(render_status_text(snapshot))
+    return 1 if snapshot["overall"] == "WARN" else 0
+
+
 def run_live_cycle_command(
     *,
     mode: str,
@@ -467,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
             symbols=args.symbol,
             repair=args.repair,
             acknowledge=args.i_understand_testnet_order,
+        )
+    if args.command == "status":
+        return run_status_command(
+            db=args.db,
+            json_output=args.json,
+            collect_system=not args.no_system,
         )
     if args.command == "run-cycle":
         return run_live_cycle_command(

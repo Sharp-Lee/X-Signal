@@ -265,7 +265,8 @@ Run the offline CLI:
 
 ```bash
 xsignal-vpe-live replay --root data --db data/live/vpe-live.sqlite
-xsignal-vpe-live status --db data/live/vpe-live.sqlite
+xsignal-vpe-live status --db data/live/vpe-live.sqlite --no-system
+xsignal-vpe-status --db data/live/vpe-live.sqlite --no-system
 xsignal-vpe-live reconcile --db data/live/vpe-live.sqlite
 ```
 
@@ -430,6 +431,27 @@ retention begins from that startup point. Recovered historical bars update
 buffers and protective position state, but they do not open delayed entries or
 submit delayed pyramid adds; the daemon waits for fresh realtime triggers after
 recovery.
+
+The daemon also keeps an entry health gate. New entries are blocked until the
+startup reconciliation pass is clean. Later WebSocket reconnect failures, REST
+rate-limit errors, or reconciliation errors close the gate again; the next clean
+reconciliation pass reopens it. This gate only blocks new entries. It does not
+stop realtime high/last-price maintenance for active positions, so trailing
+stops and pyramid-add checks continue to run.
+
+Operator status is available as either the `xsignal-vpe-live status` subcommand
+or the shorter standalone command:
+
+```bash
+xsignal-vpe-status --db /var/lib/xsignal/live/vpe-testnet.sqlite
+xsignal-vpe-status --db /var/lib/xsignal/live/vpe-testnet.sqlite --json
+```
+
+The status command summarizes the deployed revision, systemd service state,
+live guard state, WebSocket socket queues, recent daemon journal signals,
+persisted bar/cursor lag, active positions, and unresolved order intents. It
+returns non-zero when warnings are present. Use `--no-system` for local SQLite
+inspection without systemd/journal/socket checks.
 
 The one-shot cycle remains available as a fallback/manual check:
 

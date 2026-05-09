@@ -15,6 +15,7 @@ from xsignal.strategies.volume_price_efficiency_v1.live.binance_adapter import (
     build_usd_futures_broker,
 )
 from xsignal.strategies.volume_price_efficiency_v1.live.binance_rest import BinanceRestClient
+from xsignal.strategies.volume_price_efficiency_v1.live.health_gate import EntryHealthGate
 from xsignal.strategies.volume_price_efficiency_v1.live.market_data import (
     fetch_closed_klines,
     fetch_closed_klines_range,
@@ -190,7 +191,8 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         symbols=len(symbols),
         intervals=list(config.intervals),
     )
-    run_reconciliation_pass(
+    entry_gate = EntryHealthGate()
+    summary = run_reconciliation_pass(
         store=store,
         broker=broker,
         symbols=symbols,
@@ -198,6 +200,8 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
         allow_repair=False,
         now=datetime.now(timezone.utc),
     )
+    entry_gate.mark_reconcile(summary)
+    _print_reconcile_event(summary=summary, entry_gate=entry_gate)
 
     service = RealtimeStrategyService(
         store=store,
@@ -228,6 +232,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
                 broker.rest_client,
                 aggregator,
                 service,
+                entry_gate,
                 stop_event,
                 counter,
                 config,
@@ -244,6 +249,7 @@ async def run_stream_daemon_async(*, config: StreamDaemonConfig, credentials) ->
                     symbols=symbols,
                     environment=config.mode,
                     interval_seconds=config.reconcile_interval_seconds,
+                    entry_gate=entry_gate,
                     stop_event=stop_event,
                 )
             )
@@ -258,6 +264,7 @@ async def _consume_stream_url(
     rest_client: BinanceRestClient,
     aggregator: MultiIntervalAggregator,
     service: RealtimeStrategyService,
+    entry_gate: EntryHealthGate,
     stop_event: asyncio.Event,
     counter: "_EventCounter",
     config: StreamDaemonConfig,
@@ -288,6 +295,7 @@ async def _consume_stream_url(
                             aggregator=aggregator,
                             service=service,
                             event=event,
+                            entry_gate=entry_gate,
                         )
                     else:
                         result = service.process_price_event(event, allow_pyramid_add=True)
@@ -296,7 +304,8 @@ async def _consume_stream_url(
                         stop_event.set()
                         return
         except Exception as exc:  # noqa: BLE001
-            _print_event("stream_error", error=str(exc))
+            entry_gate.mark_stream_error(str(exc))
+            _print_event("stream_error", error=str(exc), entry_gate=entry_gate.snapshot())
             await asyncio.sleep(config.reconnect_backoff_seconds)
 
 
@@ -356,6 +365,7 @@ def _process_closed_1m_event(
     aggregator: MultiIntervalAggregator,
     service: RealtimeStrategyService,
     event,
+    entry_gate: EntryHealthGate | None = None,
 ) -> None:
     store.upsert_market_bar(market_bar_from_event(event))
     store.advance_market_cursor(symbol=event.symbol, interval="1m", open_time=event.open_time)
@@ -365,7 +375,7 @@ def _process_closed_1m_event(
         store.upsert_market_bar(market_bar_from_event(aggregate))
         result = service.process_closed_bar(
             aggregate,
-            allow_entry=True,
+            allow_entry=True if entry_gate is None else entry_gate.allow_entries,
             allow_pyramid_add=True,
         )
         _print_strategy_action(event=aggregate, result=result)
@@ -391,6 +401,7 @@ async def _periodic_reconcile(
     symbols: list[str],
     environment: str,
     interval_seconds: float,
+    entry_gate: EntryHealthGate,
     stop_event: asyncio.Event,
 ) -> None:
     while not stop_event.is_set():
@@ -405,11 +416,8 @@ async def _periodic_reconcile(
             allow_repair=False,
             now=datetime.now(timezone.utc),
         )
-        _print_event(
-            "reconcile_pass",
-            status="error" if summary.error_count else "clean",
-            errors=summary.error_count,
-        )
+        entry_gate.mark_reconcile(summary)
+        _print_reconcile_event(summary=summary, entry_gate=entry_gate)
 
 
 class _EventCounter:
@@ -430,3 +438,12 @@ def _live_config(mode: str):
 
 def _print_event(event: str, **fields) -> None:
     print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
+
+
+def _print_reconcile_event(*, summary, entry_gate: EntryHealthGate) -> None:
+    _print_event(
+        "reconcile_pass",
+        status="error" if summary.error_count else "clean",
+        errors=summary.error_count,
+        entry_gate=entry_gate.snapshot(),
+    )
