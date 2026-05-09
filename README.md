@@ -397,13 +397,20 @@ service loop.
 
 ## VPE Automatic Live Cycle
 
-The preferred automatic runner is the realtime WebSocket daemon. It subscribes
-only to each selected `TRADING` USDT perpetual symbol's `1m` kline stream, then
-locally aggregates the configured signal intervals. Signals are screened only
-when a locally aggregated bar is complete; open positions are maintained from
-the realtime `1m` high plus latest close price. Trailing stops and pyramid-add
-triggers use those forming `1m` updates, while entries still require a closed
-signal bar.
+The preferred automatic runner is the realtime WebSocket daemon. In steady
+state it uses full-universe `1m` kline WebSocket streams for every selected
+`TRADING` USDT perpetual symbol, then locally aggregates the configured signal
+intervals. REST kline calls are recovery-only: startup and reconnect gap
+recovery read persisted `1m` cursors, fetch missing closed `1m` bars, and replay
+them through the same local pipeline. Signals are screened only when a locally
+aggregated bar is complete.
+
+Unclosed `1m` updates are memory-only. They are not persisted as market bars;
+only symbols with active strategy positions consume them for trailing-stop and
+pyramid-add maintenance. Closed `1m` bars are batch-written to SQLite and then
+aggregated into the configured signal intervals. This keeps the WebSocket read
+path separate from the exchange order path and prevents full-market market data
+from competing with entry, stop-replacement, and reconciliation REST calls.
 
 Run the testnet daemon locally:
 
